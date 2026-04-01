@@ -1,0 +1,4 @@
+node_modules/
+*.splat
+*.ply
+/scenes/*.*

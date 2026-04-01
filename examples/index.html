@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HoloSplat – Gaussian Splat Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      color: #eee;
+      font-family: system-ui, sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    #toolbar h1 { font-size: 1rem; font-weight: 600; color: #fff; margin-right: 4px; }
+    #toolbar label { font-size: 0.8rem; color: #999; display: flex; align-items: center; gap: 6px; }
+    #toolbar input[type="text"],
+    #toolbar input[type="url"] {
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #eee;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      width: 360px;
+    }
+    button {
+      background: #3a7aff;
+      color: #fff;
+      border: none;
+      padding: 5px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    button:hover { background: #5590ff; }
+    button:disabled { background: #555; cursor: default; }
+    #status { font-size: 0.75rem; color: #888; margin-left: auto; white-space: nowrap; }
+    #status.error { color: #ff5555; font-weight: 600; }
+    #canvasWrap { flex: 1; position: relative; overflow: hidden; }
+    canvas { width: 100%; height: 100%; display: block; }
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px;
+      pointer-events: none;
+    }
+    #message { font-size: 0.9rem; color: #666; text-align: center; max-width: 480px; line-height: 1.5; }
+    #message.error { color: #ff7070; }
+    #progress { width: 240px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; display: none; }
+    #progressBar { height: 100%; background: #3a7aff; width: 0%; transition: width 0.1s; }
+    #gpuError {
+      position: absolute; inset: 0;
+      display: none; align-items: center; justify-content: center;
+      background: #1a1a1a; flex-direction: column; gap: 12px; padding: 32px;
+      text-align: center;
+    }
+    #gpuError h2 { color: #ff7070; font-size: 1.1rem; }
+    #gpuError p  { color: #888; font-size: 0.85rem; line-height: 1.6; max-width: 420px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <h1>HoloSplat</h1>
+    <label>
+      <input id="urlInput" type="url" placeholder="http://localhost:8080/scenes/file.ply  (.ply / .splat / .spz)" />
+    </label>
+    <button id="loadBtn">Load</button>
+    <label>BG <input id="bgColor" type="color" value="#000000"></label>
+    <label>Scale <input id="splatScale" type="range" min="0.1" max="3" step="0.05" value="1"></label>
+    <label><input id="autoRotate" type="checkbox"> Auto-rotate</label>
+    <button id="resetBtn" disabled>Reset Camera</button>
+    <span id="status">Ready</span>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="viewer"></canvas>
+    <div id="overlay">
+      <div id="message">Paste a scene URL above and click Load<br>
+        <small style="color:#555">Serve scenes with: <code style="color:#888">python server.py</code> → http://localhost:8080</small>
+      </div>
+      <div id="progress"><div id="progressBar"></div></div>
+    </div>
+    <div id="gpuError">
+      <h2>WebGPU not available</h2>
+      <p>HoloSplat requires WebGPU. Try Chrome 113+ or Edge 113+.<br>
+        On Chrome, make sure you're on <code>http://localhost</code> or <code>https://</code> — WebGPU is blocked on <code>file://</code>.</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { create } from '../dist/holosplat.esm.js';
+
+    // ── WebGPU availability check ────────────────────────────────────────────
+    if (!navigator.gpu) {
+      document.getElementById('gpuError').style.display = 'flex';
+      document.getElementById('loadBtn').disabled = true;
+    }
+
+    // ── Element refs ─────────────────────────────────────────────────────────
+    const urlInput    = document.getElementById('urlInput');
+    const loadBtn     = document.getElementById('loadBtn');
+    const resetBtn    = document.getElementById('resetBtn');
+    const statusEl    = document.getElementById('status');
+    const messageEl   = document.getElementById('message');
+    const progressEl  = document.getElementById('progress');
+    const progressBar = document.getElementById('progressBar');
+    const bgColor     = document.getElementById('bgColor');
+    const splatScale  = document.getElementById('splatScale');
+    const autoRotate  = document.getElementById('autoRotate');
+
+    let viewer = null;
+
+    // ── Controls (wired once, safe to call with null viewer) ─────────────────
+    bgColor.addEventListener('input',  e => viewer?.setBackground(e.target.value));
+    splatScale.addEventListener('input', e => viewer?.setSplatScale(parseFloat(e.target.value)));
+    autoRotate.addEventListener('change', e => viewer?.setAutoRotate(e.target.checked));
+    resetBtn.addEventListener('click', () => viewer?.resetCamera());
+
+    // ── Load ─────────────────────────────────────────────────────────────────
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.className   = isError ? 'error' : '';
+    }
+
+    function setMessage(text, isError = false) {
+      messageEl.textContent = text;
+      messageEl.className   = isError ? 'error' : '';
+    }
+
+    async function loadScene(url) {
+      viewer?.destroy();
+      viewer = null;
+      resetBtn.disabled = true;
+      loadBtn.disabled  = true;
+
+      setStatus('Loading…');
+      setMessage('Fetching scene…');
+      progressEl.style.display = 'block';
+      progressBar.style.width  = '0%';
+
+      viewer = await create({
+        canvas:     '#viewer',
+        background: bgColor.value,
+        splatScale: parseFloat(splatScale.value),
+        autoRotate: autoRotate.checked,
+        src:        url,
+
+        onProgress(p) {
+          progressBar.style.width = `${(p * 100).toFixed(0)}%`;
+          setMessage(`Loading… ${(p * 100).toFixed(0)}%`);
+        },
+
+        onLoad() {
+          const name = url.split('/').pop().split('?')[0];
+          setStatus(`${name}`);
+          setMessage('');
+          progressEl.style.display = 'none';
+          resetBtn.disabled = false;
+          loadBtn.disabled  = false;
+        },
+
+        onError(err) {
+          console.error('[HoloSplat]', err);
+          setStatus('Error — see console', true);
+          setMessage(err.message, true);
+          progressEl.style.display = 'none';
+          loadBtn.disabled = false;
+        },
+      });
+    }
+
+    loadBtn.addEventListener('click', () => {
+      const url = urlInput.value.trim();
+      if (url) loadScene(url);
+    });
+
+    urlInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') loadBtn.click();
+    });
+
+    // Pre-fill with local server URL if on localhost
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      const port = location.port || '8080';
+      urlInput.placeholder = `http://localhost:${port}/scenes/  (.ply / .splat / .spz)`;
+    }
+  </script>
+</body>
+</html>
