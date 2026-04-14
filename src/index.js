@@ -36,6 +36,10 @@
  *     camera               – OrbitCamera instance (for direct manipulation)
  */
 import { Viewer } from './viewer.js';
+import { player } from './player.js';
+import { compressToSpz, encodeSpz } from './compress.js';
+import { parseSplat } from './loaders/splat-loader.js';
+import { parsePly } from './loaders/ply-loader.js';
 
 export async function create(options = {}) {
   const { onLoad, onError, src, ...viewerOpts } = options;
@@ -69,5 +73,5 @@ export async function create(options = {}) {
   };
 }
 
-// Also expose Viewer class for advanced usage
-export { Viewer };
+// Also expose Viewer class, parsers, and compression utilities
+export { Viewer, player, compressToSpz, encodeSpz, parseSplat, parsePly };

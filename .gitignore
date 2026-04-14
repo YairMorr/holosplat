@@ -1,4 +1,8 @@
 node_modules/
+__pycache__/
+.claude/
+
+# Scene files (kept local, not committed)
+/scenes/*.*
 *.splat
 *.ply
-/scenes/*.*

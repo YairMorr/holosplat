@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>HoloSplat – Compress to .spz</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111; color: #eee;
+      font-family: system-ui, sans-serif;
+      min-height: 100dvh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 20px; padding: 32px;
+    }
+    h1 { font-size: 1.1rem; font-weight: 600; color: #fff; }
+    p  { font-size: 0.82rem; color: #888; text-align: center; line-height: 1.6; max-width: 480px; }
+    #dropzone {
+      width: 100%; max-width: 520px;
+      border: 2px dashed #444; border-radius: 10px;
+      padding: 48px 32px; text-align: center;
+      cursor: pointer; transition: border-color .15s, background .15s;
+    }
+    #dropzone:hover, #dropzone.over { border-color: #3a7aff; background: #1a2a4a; }
+    #dropzone p { color: #666; font-size: 0.85rem; margin-top: 8px; }
+    #dropzone strong { color: #aaa; }
+    #fileInput { display: none; }
+    #results { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 10px; }
+    .result {
+      background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+      padding: 12px 16px; display: flex; align-items: center; gap: 12px;
+    }
+    .result.error { border-color: #663; background: #1a1a10; }
+    .result .name { flex: 1; font-size: 0.85rem; color: #ccc; word-break: break-all; }
+    .result .sizes { font-size: 0.75rem; color: #666; white-space: nowrap; }
+    .result .sizes .ratio { color: #5a5; font-weight: 600; }
+    .result .sizes .err   { color: #f77; }
+    button.dl {
+      background: #3a7aff; color: #fff; border: none;
+      padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    button.dl:hover { background: #5590ff; }
+    .spinner { display: inline-block; width: 14px; height: 14px;
+      border: 2px solid #444; border-top-color: #3a7aff;
+      border-radius: 50%; animation: spin .6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <h1>HoloSplat — Compress to .spz</h1>
+  <p>Drop <strong>.splat</strong> or <strong>.ply</strong> files here to compress them to the gzip-packed <strong>.spz</strong> format.</p>
+
+  <div id="dropzone">
+    <strong>Drop files here</strong>
+    <p>or click to select</p>
+    <input id="fileInput" type="file" accept=".splat,.ply" multiple>
+  </div>
+
+  <div id="results"></div>
+
+  <script type="module">
+    import { compressToSpz } from '../dist/holosplat.esm.js';
+    import { parseSplat }    from '../dist/holosplat.esm.js';
+    import { parsePly }      from '../dist/holosplat.esm.js';
+
+    const dropzone  = document.getElementById('dropzone');
+    const fileInput = document.getElementById('fileInput');
+    const results   = document.getElementById('results');
+
+    // ── Drop / click wiring ───────────────────────────────────────────────────
+    dropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => handleFiles([...e.target.files]));
+
+    dropzone.addEventListener('dragover',  e => { e.preventDefault(); dropzone.classList.add('over'); });
+    dropzone.addEventListener('dragleave', ()  => dropzone.classList.remove('over'));
+    dropzone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropzone.classList.remove('over');
+      handleFiles([...e.dataTransfer.files]);
+    });
+
+    // ── Process files ─────────────────────────────────────────────────────────
+    async function handleFiles(files) {
+      for (const file of files) {
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (ext !== 'splat' && ext !== 'ply') {
+          addResult(file.name, null, null, `Unsupported format .${ext} — use .splat or .ply`);
+          continue;
+        }
+        const row = addResult(file.name, file.size, null, null, true);
+        try {
+          const buf     = await file.arrayBuffer();
+          const parsed  = ext === 'ply' ? parsePly(buf) : parseSplat(buf);
+          const spzBuf  = await compressToSpz(parsed.data, parsed.count);
+          const outName = file.name.replace(/\.(splat|ply)$/i, '.spz');
+          updateResult(row, file.size, spzBuf.byteLength, outName, spzBuf);
+        } catch (err) {
+          updateResult(row, file.size, null, null, null, err.message);
+        }
+      }
+    }
+
+    // ── Result rows ───────────────────────────────────────────────────────────
+    function addResult(name, origSize, spzSize, errorMsg, loading = false) {
+      const row = document.createElement('div');
+      row.className = 'result' + (errorMsg ? ' error' : '');
+      row.innerHTML = `
+        <div class="name">${name}</div>
+        <div class="sizes">${loading ? '<span class="spinner"></span>' : renderSizes(origSize, spzSize, errorMsg)}</div>
+        ${spzSize ? `<button class="dl">Download</button>` : ''}
+      `;
+      results.prepend(row);
+      return row;
+    }
+
+    function updateResult(row, origSize, spzSize, outName, spzBuf, errorMsg = null) {
+      row.className = 'result' + (errorMsg ? ' error' : '');
+      row.querySelector('.sizes').innerHTML = renderSizes(origSize, spzSize, errorMsg);
+      if (spzBuf) {
+        const btn = document.createElement('button');
+        btn.className = 'dl';
+        btn.textContent = 'Download';
+        btn.addEventListener('click', () => triggerDownload(outName, spzBuf));
+        row.appendChild(btn);
+      }
+    }
+
+    function renderSizes(origSize, spzSize, errorMsg) {
+      if (errorMsg) return `<span class="err">${errorMsg}</span>`;
+      if (!spzSize)  return '';
+      const ratio = (spzSize / origSize * 100).toFixed(0);
+      return `${fmt(origSize)} → ${fmt(spzSize)} <span class="ratio">(${ratio}%)</span>`;
+    }
+
+    function fmt(bytes) {
+      return bytes >= 1_000_000
+        ? (bytes / 1_000_000).toFixed(1) + ' MB'
+        : (bytes / 1_000).toFixed(0) + ' KB';
+    }
+
+    function triggerDownload(name, buffer) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([buffer], { type: 'application/octet-stream' }));
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+  </script>
+</body>
+</html>
