@@ -181,6 +181,21 @@ export class OrbitCamera {
     return (height * 0.5) / Math.tan(this.fov * 0.5);
   }
 
+  /**
+   * Sync orbit state from an explicit eye + target.
+   * After this call, update() reproduces the same view.
+   * Used by the animation system so orbit controls resume from the animated position.
+   */
+  setFromLookAt(eye, target) {
+    this.target = [target[0], target[1], target[2]];
+    const dx = eye[0] - target[0];
+    const dy = eye[1] - target[1];
+    const dz = eye[2] - target[2];
+    this.radius = Math.hypot(dx, dy, dz) || 0.001;
+    this.phi    = Math.asin(Math.max(-1, Math.min(1, dy / this.radius)));
+    this.theta  = Math.atan2(dx, dz);
+  }
+
   /** Fit camera to a scene bounding box. */
   fitScene(positions, numSplats) {
     let minX = Infinity, minY = Infinity, minZ = Infinity;

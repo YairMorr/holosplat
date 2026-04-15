@@ -26,6 +26,7 @@ FILES = [
     'src/loaders/splat-loader.js',
     'src/loaders/ply-loader.js',
     'src/loaders/spz-loader.js',
+    'src/animation.js',
     'src/compress.js',
     'src/renderer.js',
     'src/viewer.js',
@@ -33,7 +34,7 @@ FILES = [
     'src/index.js',
 ]
 
-EXPORTS = 'create, player, Viewer, compressToSpz, encodeSpz, parseSplat, parsePly'
+EXPORTS = 'create, player, Viewer, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly'
 BANNER  = f'/*! HoloSplat v{VERSION} – WebGPU Gaussian Splat viewer | MIT */'
 
 # ── Source transforms ─────────────────────────────────────────────────────────

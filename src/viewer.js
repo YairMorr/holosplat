@@ -7,12 +7,13 @@
  *   await viewer.load(url);
  *   viewer.start();
  */
-import { Renderer }   from './renderer.js';
-import { OrbitCamera } from './camera.js';
+import { Renderer }    from './renderer.js';
+import { OrbitCamera }  from './camera.js';
 import { createSorter } from './sorter.js';
-import { loadSplat }  from './loaders/splat-loader.js';
-import { loadPly }    from './loaders/ply-loader.js';
-import { loadSpz }    from './loaders/spz-loader.js';
+import { loadSplat }   from './loaders/splat-loader.js';
+import { loadPly }     from './loaders/ply-loader.js';
+import { loadSpz }     from './loaders/spz-loader.js';
+import { loadAnimation } from './animation.js';
 
 export class Viewer {
   constructor(options = {}) {
@@ -44,6 +45,10 @@ export class Viewer {
     this._rafId      = null;
     this._running    = false;
     this._resizeObs  = null;
+
+    this._animation  = null;  // Animation instance, or null
+    this._lastTick   = null;  // performance.now() of previous tick (for dt)
+    this.onFrame     = null;  // callback(view, proj, width, height) — called each tick
   }
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -107,6 +112,58 @@ export class Viewer {
 
   resetCamera() { this._camera.fitScene(this._gaussians, this._numSplats); }
 
+  // ── Animation ──────────────────────────────────────────────────────────────
+
+  /** Attach a pre-loaded Animation instance. Pass null to detach. */
+  setAnimation(anim) {
+    this._animation = anim;
+    if (anim?.fov != null) {
+      this._camera.fov = anim.fov * Math.PI / 180;
+    }
+  }
+
+  /** Fetch, parse, and attach an animation from a URL. */
+  async loadAnimationUrl(url) {
+    const anim = await loadAnimation(url);
+    this.setAnimation(anim);
+    return anim;
+  }
+
+  // ── Callout projection ─────────────────────────────────────────────────────
+
+  /**
+   * Project an array of { id, pos:[x,y,z] } callouts to screen coordinates.
+   * Returns array of { id, visible, x, y } using the current view/proj matrices.
+   * Call this after update() (i.e. inside onFrame or after a tick).
+   */
+  projectCallouts(callouts) {
+    const view = this._camera.viewMatrix;
+    const proj = this._camera.projMatrix;
+    const w    = this._canvas.width;
+    const h    = this._canvas.height;
+    const out  = [];
+
+    for (const c of callouts) {
+      const [px, py, pz] = c.pos;
+
+      // Transform to view space (column-major matrix multiply)
+      const vx = view[0]*px + view[4]*py + view[8]*pz  + view[12];
+      const vy = view[1]*px + view[5]*py + view[9]*pz  + view[13];
+      const vz = view[2]*px + view[6]*py + view[10]*pz + view[14];
+
+      if (vz >= 0) { out.push({ id: c.id, visible: false, x: 0, y: 0 }); continue; }
+
+      // Perspective divide using the projection matrix shortcut:
+      // clip_x = proj[0]*vx,  clip_y = proj[5]*vy,  clip_w = -vz  (since proj[11] = -1)
+      const cw = -vz;
+      const sx = (proj[0] * vx / cw * 0.5 + 0.5) * w;
+      const sy = (1 - (proj[5] * vy / cw * 0.5 + 0.5)) * h;
+
+      out.push({ id: c.id, visible: true, x: sx, y: sy });
+    }
+    return out;
+  }
+
   get camera() { return this._camera; }
 
   // ── Render loop ────────────────────────────────────────────────────────────
@@ -115,13 +172,30 @@ export class Viewer {
     if (!this._running) return;
     this._rafId = requestAnimationFrame(() => this._tick());
 
+    // Delta time (seconds since last tick)
+    const now = performance.now();
+    const dt  = this._lastTick ? Math.min((now - this._lastTick) / 1000, 0.1) : 0;
+    this._lastTick = now;
+
+    const w = this._canvas.width;
+    const h = this._canvas.height;
+
+    if (this._animation) {
+      this._animation.tick(dt);
+      const { eye, target } = this._animation.getCameraFrame();
+      this._camera.setFromLookAt(eye, target);
+    } else if (this._autoRotate) {
+      this._camera.theta += 0.005;
+    }
+
     if (!this._numSplats) return;
 
-    if (this._autoRotate) this._camera.theta += 0.005;
-
-    const w   = this._canvas.width;
-    const h   = this._canvas.height;
     this._camera.update(w, h);
+
+    // Notify listeners (e.g. player updating callout positions)
+    if (this.onFrame) {
+      this.onFrame(this._camera.viewMatrix, this._camera.projMatrix, w, h);
+    }
 
     const view  = this._camera.viewMatrix;
     const proj  = this._camera.projMatrix;

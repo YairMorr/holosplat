@@ -26,13 +26,32 @@
  *
  * ─── Returned API ───────────────────────────────────────────────────────────
  *
- *   load(url)           – load a new scene into the same player
- *   destroy()           – stop rendering and remove all created DOM
- *   setBackground(bg)   – '#rrggbb' | '#rrggbbaa' | 'transparent' | [r,g,b,a]
- *   setSplatScale(n)    – multiplier applied to all splat sizes
- *   setAutoRotate(bool) – toggle slow orbit rotation
- *   resetCamera()       – fit camera back to the loaded scene
- *   camera              – OrbitCamera instance for direct manipulation
+ *   load(url)              – load a new scene into the same player
+ *   loadAnim(url)          – load a Blender animation JSON (camera + callouts)
+ *   destroy()              – stop rendering and remove all created DOM
+ *   setBackground(bg)      – '#rrggbb' | '#rrggbbaa' | 'transparent' | [r,g,b,a]
+ *   setSplatScale(n)       – multiplier applied to all splat sizes
+ *   setAutoRotate(bool)    – toggle slow orbit rotation (disabled while animation plays)
+ *   resetCamera()          – fit camera back to the loaded scene
+ *   camera                 – OrbitCamera instance for direct manipulation
+ *   animation              – Animation instance (after loadAnim), or null
+ *   callout(id)            – returns the HTMLElement for a named callout div
+ *
+ * ─── Callout styling ────────────────────────────────────────────────────────
+ *
+ *   Each callout exported from Blender creates a <div class="hs-callout"
+ *   data-id="name"> absolutely positioned over the canvas. The library only
+ *   moves it — you provide the content and styles:
+ *
+ *   .hs-callout[data-id="screen"] { width: 120px; background: white; ... }
+ *
+ *   When the callout point goes behind the camera, the class hs-callout--hidden
+ *   is added (display: none by default) and removed when it comes back into view.
+ *
+ * ─── Data attributes ────────────────────────────────────────────────────────
+ *
+ *   data-holosplat="url"         – scene file (auto-init)
+ *   data-holosplat-anim="url"    – animation JSON (auto-init alongside scene)
  */
 
 import { Viewer } from './viewer.js';
@@ -57,6 +76,9 @@ const PLAYER_CSS = `
 .hs-player .hs-bar{height:100%;background:#3a7aff;width:0%;transition:width .1s;}
 .hs-player .hs-msg{font-size:.78rem;color:rgba(255,255,255,.45);text-align:center;max-width:260px;line-height:1.5;padding:0 16px;}
 .hs-player .hs-msg.hs-err{color:#f87;}
+.hs-player .hs-callouts{position:absolute;inset:0;pointer-events:none;}
+.hs-callout{position:absolute;pointer-events:auto;transform:translate(-50%,-50%);}
+.hs-callout--hidden{display:none;}
 `;
 
 let cssInjected = false;
@@ -95,6 +117,7 @@ export function player(container, opts = {}) {
 
   const {
     src,
+    animation:  animSrc,
     background  = 'transparent',
     fov         = 60,
     near        = 0.1,
@@ -107,7 +130,9 @@ export function player(container, opts = {}) {
   // ── Build DOM ───────────────────────────────────────────────────────────────
   root.classList.add('hs-player');
 
-  const canvas  = document.createElement('canvas');
+  const canvas    = document.createElement('canvas');
+  const calloutEl = document.createElement('div');
+  calloutEl.className = 'hs-callouts';
   const overlay = document.createElement('div');
   overlay.className = 'hs-overlay';
   overlay.innerHTML =
@@ -115,6 +140,7 @@ export function player(container, opts = {}) {
     '<div class="hs-bar-wrap"><div class="hs-bar"></div></div>' +
     '<div class="hs-msg"></div>';
   root.appendChild(canvas);
+  root.appendChild(calloutEl);
   root.appendChild(overlay);
 
   const spinner = overlay.querySelector('.hs-spinner');
@@ -155,7 +181,42 @@ export function player(container, opts = {}) {
     },
   });
 
-  // ── Load ────────────────────────────────────────────────────────────────────
+  // ── Callout DOM ──────────────────────────────────────────────────────────────
+  // Map of id → HTMLElement, built when animation loads
+  const calloutDivs = {};
+
+  function buildCallouts(callouts) {
+    // Remove old callout divs
+    calloutEl.innerHTML = '';
+    for (const key of Object.keys(calloutDivs)) delete calloutDivs[key];
+
+    for (const c of callouts) {
+      const div = document.createElement('div');
+      div.className = 'hs-callout';
+      div.dataset.id = c.id;
+      calloutEl.appendChild(div);
+      calloutDivs[c.id] = div;
+    }
+  }
+
+  // Update callout positions each frame via viewer.onFrame
+  viewer.onFrame = (_view, _proj, _w, _h) => {
+    if (!viewer._animation?.callouts.length) return;
+    const projected = viewer.projectCallouts(viewer._animation.callouts);
+    for (const { id, visible, x, y } of projected) {
+      const div = calloutDivs[id];
+      if (!div) continue;
+      if (visible) {
+        div.classList.remove('hs-callout--hidden');
+        div.style.left = x + 'px';
+        div.style.top  = y + 'px';
+      } else {
+        div.classList.add('hs-callout--hidden');
+      }
+    }
+  };
+
+  // ── Load scene ───────────────────────────────────────────────────────────────
   async function load(url) {
     showLoading();
     bar.style.width = '0%';
@@ -172,11 +233,26 @@ export function player(container, opts = {}) {
     }
   }
 
+  // ── Load animation ───────────────────────────────────────────────────────────
+  async function loadAnim(url) {
+    try {
+      const anim = await viewer.loadAnimationUrl(url);
+      buildCallouts(anim.callouts);
+      return anim;
+    } catch (err) {
+      if (onError) onError(err);
+      else throw err;
+    }
+  }
+
   // ── Boot ────────────────────────────────────────────────────────────────────
   viewer.init()
     .then(() => {
       viewer.start();
-      if (src) return load(src);
+      const loads = [];
+      if (src)     loads.push(load(src));
+      if (animSrc) loads.push(loadAnim(animSrc));
+      return Promise.all(loads);
     })
     .catch(err => {
       const msg = navigator.gpu
@@ -189,6 +265,7 @@ export function player(container, opts = {}) {
   // ── Public API ───────────────────────────────────────────────────────────────
   return {
     load,
+    loadAnim,
     destroy() {
       viewer.destroy();
       root.innerHTML = '';
@@ -198,7 +275,9 @@ export function player(container, opts = {}) {
     setSplatScale(s)   { viewer.setSplatScale(s); },
     setAutoRotate(v)   { viewer.setAutoRotate(v); },
     resetCamera()      { viewer.resetCamera(); },
+    callout(id)        { return calloutDivs[id] ?? null; },
     get camera()       { return viewer.camera; },
+    get animation()    { return viewer._animation; },
   };
 }
 
@@ -206,9 +285,10 @@ export function player(container, opts = {}) {
 
 function autoInit() {
   document.querySelectorAll('[data-holosplat]').forEach(el => {
-    if (el._hsPlayer) return; // already initialised
-    const src = el.getAttribute('data-holosplat');
-    if (src) el._hsPlayer = player(el, { src });
+    if (el._hsPlayer) return;
+    const src  = el.getAttribute('data-holosplat')      || undefined;
+    const anim = el.getAttribute('data-holosplat-anim') || undefined;
+    el._hsPlayer = player(el, { src, animation: anim });
   });
 }
 

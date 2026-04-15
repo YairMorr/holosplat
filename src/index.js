@@ -37,6 +37,7 @@
  */
 import { Viewer } from './viewer.js';
 import { player } from './player.js';
+import { Animation, loadAnimation } from './animation.js';
 import { compressToSpz, encodeSpz } from './compress.js';
 import { parseSplat } from './loaders/splat-loader.js';
 import { parsePly } from './loaders/ply-loader.js';
@@ -73,5 +74,5 @@ export async function create(options = {}) {
   };
 }
 
-// Also expose Viewer class, parsers, and compression utilities
-export { Viewer, player, compressToSpz, encodeSpz, parseSplat, parsePly };
+// Also expose Viewer class, animation, parsers, and compression utilities
+export { Viewer, player, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly };
