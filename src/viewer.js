@@ -139,8 +139,10 @@ export class Viewer {
   projectCallouts(callouts) {
     const view = this._camera.viewMatrix;
     const proj = this._camera.projMatrix;
-    const w    = this._canvas.width;
-    const h    = this._canvas.height;
+    // Use CSS pixels (clientWidth/Height) so positions map directly to
+    // element left/top without DPR scaling issues.
+    const w    = this._canvas.clientWidth;
+    const h    = this._canvas.clientHeight;
     const out  = [];
 
     for (const c of callouts) {

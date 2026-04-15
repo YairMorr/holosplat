@@ -79,6 +79,8 @@ const PLAYER_CSS = `
 .hs-player .hs-callouts{position:absolute;inset:0;pointer-events:none;}
 .hs-callout{position:absolute;pointer-events:auto;transform:translate(-50%,-50%);}
 .hs-callout--hidden{display:none;}
+.hs-callout::after{content:'';display:block;width:10px;height:10px;background:#3a7aff;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,.5);}
+.hs-callout:not(:empty)::after{display:none;}
 `;
 
 let cssInjected = false;
@@ -238,10 +240,15 @@ export function player(container, opts = {}) {
     try {
       const anim = await viewer.loadAnimationUrl(url);
       buildCallouts(anim.callouts);
+      console.log(
+        `[HoloSplat] animation loaded: ${anim.frameCount} frames @ ${anim.fps}fps, ` +
+        `${anim.callouts.length} callout(s):`, anim.callouts.map(c => c.id)
+      );
       return anim;
     } catch (err) {
+      console.error('[HoloSplat] animation failed to load:', err);
       if (onError) onError(err);
-      else throw err;
+      // Don't rethrow — leave the scene visible, just no animation
     }
   }
 
