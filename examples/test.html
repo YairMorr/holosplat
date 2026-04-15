@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HoloSplat Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #111; height: 100dvh; display: flex; flex-direction: column; }
+    #scene { flex: 1; position: relative; }
+
+    /* ── Controls overlay ─────────────────────────────── */
+    #controls {
+      position: absolute; bottom: 12px; left: 12px;
+      display: flex; align-items: center; gap: 10px;
+      background: rgba(0,0,0,.55); backdrop-filter: blur(6px);
+      border: 1px solid rgba(255,255,255,.08);
+      border-radius: 8px; padding: 8px 14px;
+      font: 12px/1 system-ui, sans-serif; color: #ccc;
+      z-index: 10;
+    }
+    #controls label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+    .ctrl-btn {
+      padding: 4px 12px; border-radius: 5px; border: none; cursor: pointer;
+      font: 12px system-ui, sans-serif; font-weight: 600;
+      transition: background .15s;
+    }
+    #btn-anim { background: #3a7aff; color: #fff; }
+    #btn-anim.paused { background: #444; }
+    #btn-reset { background: #333; color: #ccc; }
+    #scale-slider { width: 90px; accent-color: #3a7aff; cursor: pointer; }
+    #scale-val { min-width: 2.5ch; text-align: right; }
+
+    /* ── Log ──────────────────────────────────────────── */
+    #log {
+      height: 120px; overflow-y: auto; background: #000;
+      font: 12px/1.6 monospace; padding: 8px 12px; color: #0f0;
+      border-top: 1px solid #222; flex-shrink: 0;
+    }
+    #log .err { color: #f55; }
+  </style>
+</head>
+<body>
+
+<div id="scene">
+  <div id="controls">
+    <button id="btn-anim" class="ctrl-btn">⏸ Animation</button>
+    <label>
+      Scale
+      <input id="scale-slider" type="range" min="0.1" max="3" step="0.05" value="1">
+      <span id="scale-val">1.00</span>
+    </label>
+    <button id="btn-reset" class="ctrl-btn">Reset cam</button>
+  </div>
+</div>
+<div id="log"></div>
+
+<script src="../dist/holosplat.iife.js"></script>
+<script>
+  // ── On-page log ──────────────────────────────────────
+  const log = document.getElementById('log');
+  function out(msg, isErr) {
+    const line = document.createElement('div');
+    if (isErr) line.className = 'err';
+    line.textContent = msg;
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
+  }
+  const _log   = console.log.bind(console);
+  const _error = console.error.bind(console);
+  console.log   = (...a) => { _log(...a);   out(a.join(' ')); };
+  console.error = (...a) => { _error(...a); out(a.join(' '), true); };
+
+  out('Initialising player...');
+
+  // ── Player ───────────────────────────────────────────
+  const p = HoloSplat.player('#scene', {
+    src:       'https://yairmorr.fra1.cdn.digitaloceanspaces.com/desk_2.spz',
+    animation: 'https://yairmorr.fra1.cdn.digitaloceanspaces.com/desk_2.json',
+    onLoad() {
+      out('Scene loaded.');
+      const cam = p.camera;
+      out(`Scene center:  x=${cam.target[0].toFixed(3)}  y=${cam.target[1].toFixed(3)}  z=${cam.target[2].toFixed(3)}`);
+      out(`Camera radius: ${cam.radius.toFixed(3)}`);
+    },
+    onProgress(v){ out(`Loading scene: ${(v*100).toFixed(0)}%`); },
+    onError(err) { out('ERROR: ' + err.message, true); },
+  });
+
+  // Log anim frame 0 once animation is ready
+  let logged = false;
+  const pollAnim = setInterval(() => {
+    const anim = p.animation;
+    if (!anim || logged) return;
+    logged = true;
+    clearInterval(pollAnim);
+    const frame0 = anim.getCameraFrame();
+    out(`Anim frame 0 eye:    x=${frame0.eye[0].toFixed(3)}  y=${frame0.eye[1].toFixed(3)}  z=${frame0.eye[2].toFixed(3)}`);
+    out(`Anim frame 0 target: x=${frame0.target[0].toFixed(3)}  y=${frame0.target[1].toFixed(3)}  z=${frame0.target[2].toFixed(3)}`);
+  }, 200);
+
+  // ── Controls ─────────────────────────────────────────
+  const btnAnim = document.getElementById('btn-anim');
+  btnAnim.addEventListener('click', () => {
+    const paused = !p.animationPaused;
+    p.setAnimationPaused(paused);
+    btnAnim.textContent = paused ? '▶ Animation' : '⏸ Animation';
+    btnAnim.classList.toggle('paused', paused);
+    out(paused ? 'Animation paused — free camera.' : 'Animation resumed.');
+  });
+
+  const slider   = document.getElementById('scale-slider');
+  const scaleVal = document.getElementById('scale-val');
+  slider.addEventListener('input', () => {
+    const v = parseFloat(slider.value);
+    scaleVal.textContent = v.toFixed(2);
+    p.setSplatScale(v);
+  });
+
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    p.resetCamera();
+    out('Camera reset to scene fit.');
+  });
+</script>
+</body>
+</html>

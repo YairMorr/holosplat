@@ -1,6 +1,6 @@
 {
   "name": "holosplat",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Lightweight WebGPU Gaussian Splat viewer library",
   "type": "module",
   "main": "dist/holosplat.esm.js",

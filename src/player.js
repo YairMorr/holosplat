@@ -278,13 +278,15 @@ export function player(container, opts = {}) {
       root.innerHTML = '';
       root.classList.remove('hs-player');
     },
-    setBackground(bg)  { viewer.setBackground(bg); },
-    setSplatScale(s)   { viewer.setSplatScale(s); },
-    setAutoRotate(v)   { viewer.setAutoRotate(v); },
-    resetCamera()      { viewer.resetCamera(); },
-    callout(id)        { return calloutDivs[id] ?? null; },
-    get camera()       { return viewer.camera; },
-    get animation()    { return viewer._animation; },
+    setBackground(bg)        { viewer.setBackground(bg); },
+    setSplatScale(s)         { viewer.setSplatScale(s); },
+    setAutoRotate(v)         { viewer.setAutoRotate(v); },
+    setAnimationPaused(v)    { viewer.setAnimationPaused(v); },
+    resetCamera()            { viewer.resetCamera(); },
+    callout(id)              { return calloutDivs[id] ?? null; },
+    get camera()             { return viewer.camera; },
+    get animation()          { return viewer._animation; },
+    get animationPaused()    { return viewer._animPaused; },
   };
 }
 

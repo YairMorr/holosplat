@@ -29,10 +29,14 @@ COORDINATE SYSTEM
 Blender uses Z-up (X right, Y forward, Z up).
 HoloSplat uses Y-up (X right, Y up, Z back).
 
-This script converts automatically:
-    hs_x = bl_x
-    hs_y = bl_z
-    hs_z = -bl_y
+If you imported your Gaussian Splat using the "3D Gaussian Splatting" addon
+(or any addon that applies a world-space rotation/scale to the object), set
+GS_OBJECT_NAME to the name of that object. The script will then transform the
+camera into the object's local space, which matches the coordinate system of
+the exported .spz/.ply file. Callout objects are transformed the same way.
+
+If GS_OBJECT_NAME is None the script falls back to a simple Blender → HoloSplat
+axis conversion (hs_x = bl_x, hs_y = bl_z, hs_z = -bl_y).
 """
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
@@ -46,6 +50,12 @@ CAMERA_NAME  = None
 # Leave None to use the scene's frame range
 FRAME_START  = None
 FRAME_END    = None
+
+# Set this to the name of your imported Gaussian Splat mesh object, e.g. "desk_2".
+# When set, the camera (and callouts) are transformed into the object's local space
+# so that coordinates match the exported splat file exactly.
+# Leave None if your scene has no per-object transform on the GS object.
+GS_OBJECT_NAME = None
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -62,6 +72,15 @@ if cam_obj is None or cam_obj.type != 'CAMERA':
         "Set CAMERA_NAME or make sure the scene has an active camera."
     )
 
+# ── Resolve GS object (optional) ─────────────────────────────────────────────
+gs_obj = scene.objects.get(GS_OBJECT_NAME) if GS_OBJECT_NAME else None
+gs_inv = gs_obj.matrix_world.inverted() if gs_obj else None
+
+if gs_obj:
+    print(f"HoloSplat: using GS object '{gs_obj.name}' — camera will be in its local space")
+else:
+    print("HoloSplat: no GS object set — using default Blender → Y-up axis conversion")
+
 # ── Frame range ───────────────────────────────────────────────────────────────
 f_start = FRAME_START if FRAME_START is not None else scene.frame_start
 f_end   = FRAME_END   if FRAME_END   is not None else scene.frame_end
@@ -73,7 +92,7 @@ focal_length = cam_data.lens
 sensor_h     = cam_data.sensor_height if cam_data.sensor_fit != 'HORIZONTAL' else cam_data.sensor_width
 fov_deg      = round(2 * math.degrees(math.atan(sensor_h * 0.5 / focal_length)), 4)
 
-# ── Coordinate conversion ─────────────────────────────────────────────────────
+# ── Coordinate conversion helpers ────────────────────────────────────────────
 
 def bl_to_hs(v):
     """Blender (X right, Y fwd, Z up)  →  HoloSplat (X right, Y up, Z back)"""
@@ -99,8 +118,15 @@ for obj in scene.objects:
 callouts = []
 for name, obj in callout_objects.items():
     cid = name.removeprefix("hs.")
-    # Use the object's world position at the current frame
-    pos = bl_to_hs(obj.matrix_world.translation)
+    world_pos = obj.matrix_world.translation
+
+    if gs_inv:
+        # Transform callout position into GS object's local space (= splat file space)
+        local_pos = gs_inv @ world_pos
+        pos = [local_pos.x, local_pos.y, local_pos.z]
+    else:
+        pos = bl_to_hs(world_pos)
+
     callouts.append({"id": cid, "pos": [round(x, 6) for x in pos]})
 
 print(f"HoloSplat: found {len(callouts)} callout(s): {[c['id'] for c in callouts]}")
@@ -112,15 +138,22 @@ frames_flat = []
 for f in range(f_start, f_end + 1):
     scene.frame_set(f)
 
-    mw  = cam_obj.matrix_world
-    pos = mw.translation
+    mw = cam_obj.matrix_world
 
-    # Camera looks in its local -Z direction.
-    # matrix_world.col[2].xyz is the camera's Z axis in world space.
-    fwd_bl = -mw.col[2].xyz  # negate → forward direction
-
-    eye     = bl_to_hs(pos)
-    forward = normalize(bl_to_hs(fwd_bl))
+    if gs_inv:
+        # Transform camera into GS object's local space (= splat file coordinate system)
+        # This undoes the rotation/scale the import addon applied to the GS object,
+        # so the exported positions match the actual vertex positions in the file.
+        local_pos = gs_inv @ mw.translation
+        fwd_world = -mw.col[2].xyz          # camera looks in its local -Z direction
+        local_fwd = (gs_inv.to_3x3() @ fwd_world).normalized()
+        eye     = [local_pos.x, local_pos.y, local_pos.z]
+        forward = normalize([local_fwd.x, local_fwd.y, local_fwd.z])
+    else:
+        pos    = mw.translation
+        fwd_bl = -mw.col[2].xyz
+        eye     = bl_to_hs(pos)
+        forward = normalize(bl_to_hs(fwd_bl))
 
     frames_flat.extend([round(x, 6) for x in eye + forward])
 

@@ -47,6 +47,7 @@ export class Viewer {
     this._resizeObs  = null;
 
     this._animation  = null;  // Animation instance, or null
+    this._animPaused = false; // true → animation frozen, camera responds to user input
     this._lastTick   = null;  // performance.now() of previous tick (for dt)
     this.onFrame     = null;  // callback(view, proj, width, height) — called each tick
   }
@@ -109,6 +110,9 @@ export class Viewer {
   }
 
   setAutoRotate(v) { this._autoRotate = v; }
+
+  /** Freeze / unfreeze animation playback. When paused, camera responds to user input. */
+  setAnimationPaused(paused) { this._animPaused = paused; }
 
   resetCamera() { this._camera.fitScene(this._gaussians, this._numSplats); }
 
@@ -182,7 +186,7 @@ export class Viewer {
     const w = this._canvas.width;
     const h = this._canvas.height;
 
-    if (this._animation) {
+    if (this._animation && !this._animPaused) {
       this._animation.tick(dt);
       const { eye, target } = this._animation.getCameraFrame();
       this._camera.setFromLookAt(eye, target);
