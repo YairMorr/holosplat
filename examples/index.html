@@ -79,7 +79,8 @@
     </label>
     <button id="loadBtn">Load</button>
     <label>BG <input id="bgColor" type="color" value="#000000"></label>
-    <label>Scale <input id="splatScale" type="range" min="0.1" max="3" step="0.05" value="1"></label>
+    <label>Scale <input id="splatScale" type="range" min="0.1" max="3" step="0.05" value="1"> <span id="scaleVal">1.00</span></label>
+    <label><input id="flipY" type="checkbox"> Flip Y</label>
     <label><input id="autoRotate" type="checkbox"> Auto-rotate</label>
     <button id="resetBtn" disabled>Reset Camera</button>
     <span id="status">Ready</span>
@@ -119,13 +120,19 @@
     const progressBar = document.getElementById('progressBar');
     const bgColor     = document.getElementById('bgColor');
     const splatScale  = document.getElementById('splatScale');
+    const scaleVal    = document.getElementById('scaleVal');
+    const flipY       = document.getElementById('flipY');
     const autoRotate  = document.getElementById('autoRotate');
 
     let viewer = null;
 
     // ── Controls (wired once, safe to call with null viewer) ─────────────────
     bgColor.addEventListener('input',  e => viewer?.setBackground(e.target.value));
-    splatScale.addEventListener('input', e => viewer?.setSplatScale(parseFloat(e.target.value)));
+    splatScale.addEventListener('input', e => {
+      scaleVal.textContent = parseFloat(e.target.value).toFixed(2);
+      viewer?.setSplatScale(parseFloat(e.target.value));
+    });
+    flipY.addEventListener('change', e => viewer?.setFlipY(e.target.checked));
     autoRotate.addEventListener('change', e => viewer?.setAutoRotate(e.target.checked));
     resetBtn.addEventListener('click', () => viewer?.resetCamera());
 
@@ -155,6 +162,7 @@
         canvas:     '#viewer',
         background: bgColor.value,
         splatScale: parseFloat(splatScale.value),
+        flipY:      flipY.checked,
         autoRotate: autoRotate.checked,
         src:        url,
 

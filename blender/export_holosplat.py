@@ -15,14 +15,27 @@ The output .json file is saved next to your .blend file by default.
 
 CALLOUT OBJECTS
 ───────────────
-Any object you want to appear as a callout label in the web player should
-either be placed in a collection named  "HoloSplat Callouts",  or be named
-with the prefix  "hs."  (e.g. "hs.keyboard", "hs.screen").
+To mark a 3D point as a callout anchor, add an Empty object (Add → Empty →
+Plain Axes is recommended) and name it with the prefix "hs." followed by
+the callout id:
 
-The object's name (without the "hs." prefix) becomes the callout id.
-In the web page, style it with:
+    hs.keyboard   →  id "keyboard"
+    hs.screen     →  id "screen"
 
-    .hs-callout[data-id="keyboard"] { ... }
+Alternatively, put any objects into a collection named "HoloSplat Callouts"
+(no prefix needed; the object name becomes the id directly).
+
+In the web page, place a matching card div inside the player container:
+
+    <div class="hs-callout hs-callout--right" data-id="keyboard"
+         data-offset-x="90" data-offset-y="-35">
+      <h3>Keyboard</h3>
+      <p>Mechanical switches, 65% layout.</p>
+    </div>
+
+The player projects the Empty's position, draws a dot and a line, and
+positions the card at (dot + offset). See examples/callouts.css for
+styling defaults and directional variants.
 
 COORDINATE SYSTEM
 ─────────────────
@@ -41,14 +54,16 @@ axis conversion (hs_x = bl_x, hs_y = bl_z, hs_z = -bl_y).
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
 
-OUTPUT_PATH  = "//"          # "//" = same folder as the .blend file
-OUTPUT_NAME  = "scene_anim"  # output will be <OUTPUT_NAME>.json
+OUTPUT_PATH  = "//"    # "//" = same folder as the .blend file
+# Output filename (without .json). None = use the .blend file's own name.
+OUTPUT_NAME  = None
 
 # Leave None to use the scene's active camera
 CAMERA_NAME  = None
 
-# Leave None to use the scene's frame range
-FRAME_START  = None
+# Frame range. FRAME_START defaults to 0 (not scene.frame_start which is
+# usually 1 in Blender) so that markers placed at frame 0 are included.
+FRAME_START  = 0
 FRAME_END    = None
 
 # Set this to the name of your imported Gaussian Splat mesh object, e.g. "desk_2".
@@ -56,6 +71,11 @@ FRAME_END    = None
 # so that coordinates match the exported splat file exactly.
 # Leave None if your scene has no per-object transform on the GS object.
 GS_OBJECT_NAME = None
+
+# Set True when loading the .spz/.ply in the HoloSplat player with flipY: true.
+# Applies the same 180° X-axis rotation to all exported camera positions and
+# callout positions so the animation matches the flipped scene.
+FLIP_Y = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -86,11 +106,40 @@ f_start = FRAME_START if FRAME_START is not None else scene.frame_start
 f_end   = FRAME_END   if FRAME_END   is not None else scene.frame_end
 fps     = scene.render.fps
 
-# ── FOV from camera focal length ─────────────────────────────────────────────
-cam_data     = cam_obj.data
-focal_length = cam_data.lens
-sensor_h     = cam_data.sensor_height if cam_data.sensor_fit != 'HORIZONTAL' else cam_data.sensor_width
-fov_deg      = round(2 * math.degrees(math.atan(sensor_h * 0.5 / focal_length)), 4)
+# ── FOV from camera — vertical (fovY), matching WebGPU perspective matrix ─────
+# cam_data.angle is Blender's "active" FOV:
+#   HORIZONTAL / AUTO-landscape  → horizontal FOV
+#   VERTICAL   / AUTO-portrait   → vertical FOV
+# We always need fovY, so convert horizontal→vertical using the render aspect.
+cam_data  = cam_obj.data
+render    = scene.render
+aspect    = (render.resolution_x * render.pixel_aspect_x) / \
+            (render.resolution_y * render.pixel_aspect_y)
+cam_angle = cam_data.angle   # radians
+
+if cam_data.sensor_fit == 'VERTICAL':
+    vfov_rad = cam_angle
+elif cam_data.sensor_fit == 'HORIZONTAL':
+    vfov_rad = 2 * math.atan(math.tan(cam_angle * 0.5) / aspect)
+else:  # AUTO — landscape uses hFOV, portrait uses vFOV
+    if aspect >= 1.0:
+        vfov_rad = 2 * math.atan(math.tan(cam_angle * 0.5) / aspect)
+    else:
+        vfov_rad = cam_angle
+
+fov_deg = round(math.degrees(vfov_rad), 4)
+
+# ── Clip distances — converted to SPZ-local space if a GS object is used ──────
+# Blender clip values are in world units. When the GS object has a scale
+# transform, local-space distances = world distances / object_scale.
+if gs_obj:
+    obj_scale = gs_obj.matrix_world.to_scale()
+    inv_scale = 3.0 / (obj_scale.x + obj_scale.y + obj_scale.z)  # 1 / avg_scale
+    clip_near = cam_data.clip_start * inv_scale
+    clip_far  = cam_data.clip_end   * inv_scale
+else:
+    clip_near = cam_data.clip_start
+    clip_far  = cam_data.clip_end
 
 # ── Coordinate conversion helpers ────────────────────────────────────────────
 
@@ -162,18 +211,52 @@ scene.frame_set(saved_frame)   # restore original frame
 frame_count = f_end - f_start + 1
 print(f"HoloSplat: exported {frame_count} frames at {fps} fps  (duration {frame_count/fps:.2f}s)")
 
+# ── Apply FLIP_Y (180° X rotation: negate Y and Z) ───────────────────────────
+if FLIP_Y:
+    for i in range(frame_count):
+        b = i * 6
+        frames_flat[b + 1] = -frames_flat[b + 1]  # eye.y
+        frames_flat[b + 2] = -frames_flat[b + 2]  # eye.z
+        frames_flat[b + 4] = -frames_flat[b + 4]  # forward.y
+        frames_flat[b + 5] = -frames_flat[b + 5]  # forward.z
+    for c in callouts:
+        c["pos"][1] = -c["pos"][1]
+        c["pos"][2] = -c["pos"][2]
+    print("HoloSplat: FLIP_Y applied to camera and callout positions")
+
+# ── Export timeline markers ───────────────────────────────────────────────────
+# Blender timeline markers (added with M in the Timeline/Dopesheet editor) are
+# exported as a dict { markerName: frameNumber } where frame numbers are
+# 0-based relative to the export start frame.
+#
+# In HTML, reference them with data-from / data-to / data-frame attributes:
+#   <div class="hs-act" data-from="intro" data-to="desk_reveal" ...>
+#
+# Only markers within the exported frame range are included.
+markers = {}
+for marker in sorted(scene.timeline_markers, key=lambda m: m.frame):
+    if f_start <= marker.frame <= f_end:
+        # Frame is relative to export start (0-based)
+        markers[marker.name] = marker.frame - f_start
+
+print(f"HoloSplat: exported {len(markers)} marker(s): {list(markers.keys())}")
+
 # ── Write JSON ────────────────────────────────────────────────────────────────
 data = {
     "version"    : 1,
     "fps"        : fps,
     "frameCount" : frame_count,
     "fov"        : fov_deg,
+    "near"       : round(clip_near, 6),
+    "far"        : round(clip_far,  6),
     "frames"     : frames_flat,
     "callouts"   : callouts,
+    "markers"    : markers,
 }
 
 out_dir  = bpy.path.abspath(OUTPUT_PATH)
-out_file = str(Path(out_dir) / f"{OUTPUT_NAME}.json")
+name     = OUTPUT_NAME or Path(bpy.data.filepath).stem or "scene_anim"
+out_file = str(Path(out_dir) / f"{name}.json")
 
 with open(out_file, "w") as fp:
     json.dump(data, fp, separators=(",", ":"))

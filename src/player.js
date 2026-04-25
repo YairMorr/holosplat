@@ -77,10 +77,11 @@ const PLAYER_CSS = `
 .hs-player .hs-msg{font-size:.78rem;color:rgba(255,255,255,.45);text-align:center;max-width:260px;line-height:1.5;padding:0 16px;}
 .hs-player .hs-msg.hs-err{color:#f87;}
 .hs-player .hs-callouts{position:absolute;inset:0;pointer-events:none;}
-.hs-callout{position:absolute;pointer-events:auto;transform:translate(-50%,-50%);}
+.hs-lines{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;}
+.hs-dot{fill:#3a7aff;stroke:#fff;stroke-width:2;}
+.hs-line{stroke:rgba(255,255,255,.55);stroke-width:1.5;}
+.hs-callout{position:absolute;pointer-events:auto;}
 .hs-callout--hidden{display:none;}
-.hs-callout::after{content:'';display:block;width:10px;height:10px;background:#3a7aff;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,.5);}
-.hs-callout:not(:empty)::after{display:none;}
 `;
 
 let cssInjected = false;
@@ -126,6 +127,7 @@ export function player(container, opts = {}) {
     far         = 2000,
     splatScale  = 1,
     autoRotate  = false,
+    flipY       = false,
     onLoad, onProgress, onError,
   } = opts;
 
@@ -177,6 +179,7 @@ export function player(container, opts = {}) {
     fov, near, far,
     splatScale,
     autoRotate,
+    flipY,
     onProgress: p => {
       bar.style.width = `${(p * 100).toFixed(0)}%`;
       if (onProgress) onProgress(p);
@@ -184,36 +187,73 @@ export function player(container, opts = {}) {
   });
 
   // ── Callout DOM ──────────────────────────────────────────────────────────────
-  // Map of id → HTMLElement, built when animation loads
+  // Map of id → { card, dot, line }
   const calloutDivs = {};
+  const NS = 'http://www.w3.org/2000/svg';
 
   function buildCallouts(callouts) {
-    // Remove old callout divs
     calloutEl.innerHTML = '';
     for (const key of Object.keys(calloutDivs)) delete calloutDivs[key];
+    if (!callouts.length) return;
+
+    // SVG overlay for dots and connector lines
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'hs-lines');
+    calloutEl.appendChild(svg);
 
     for (const c of callouts) {
-      const div = document.createElement('div');
-      div.className = 'hs-callout';
-      div.dataset.id = c.id;
-      calloutEl.appendChild(div);
-      calloutDivs[c.id] = div;
+      // Line drawn first (behind dot)
+      const line = document.createElementNS(NS, 'line');
+      line.setAttribute('class', 'hs-line');
+      svg.appendChild(line);
+
+      const dot = document.createElementNS(NS, 'circle');
+      dot.setAttribute('class', 'hs-dot');
+      dot.setAttribute('r', '5');
+      svg.appendChild(dot);
+
+      // Find user-authored card: look in root container first, then document-wide
+      let card = root.querySelector(`.hs-callout[data-id="${c.id}"]`)
+               ?? document.querySelector(`.hs-callout[data-id="${c.id}"]`);
+      if (card) {
+        calloutEl.appendChild(card); // move into overlay for absolute positioning
+      } else {
+        card = document.createElement('div');
+        card.className = 'hs-callout';
+        card.dataset.id = c.id;
+        calloutEl.appendChild(card);
+      }
+
+      calloutDivs[c.id] = { card, dot, line };
     }
   }
 
-  // Update callout positions each frame via viewer.onFrame
-  viewer.onFrame = (_view, _proj, _w, _h) => {
+  // Update positions each frame
+  viewer.onFrame = () => {
     if (!viewer._animation?.callouts.length) return;
     const projected = viewer.projectCallouts(viewer._animation.callouts);
     for (const { id, visible, x, y } of projected) {
-      const div = calloutDivs[id];
-      if (!div) continue;
+      const entry = calloutDivs[id];
+      if (!entry) continue;
+      const { card, dot, line } = entry;
       if (visible) {
-        div.classList.remove('hs-callout--hidden');
-        div.style.left = x + 'px';
-        div.style.top  = y + 'px';
+        const ox = parseFloat(card.dataset.offsetX ?? card.dataset.ox ?? 80);
+        const oy = parseFloat(card.dataset.offsetY ?? card.dataset.oy ?? -40);
+        const cx = x + ox, cy = y + oy;
+
+        dot.setAttribute('cx', x);   dot.setAttribute('cy', y);
+        line.setAttribute('x1', x);  line.setAttribute('y1', y);
+        line.setAttribute('x2', cx); line.setAttribute('y2', cy);
+        dot.style.display  = '';
+        line.style.display = '';
+
+        card.style.left = cx + 'px';
+        card.style.top  = cy + 'px';
+        card.classList.remove('hs-callout--hidden');
       } else {
-        div.classList.add('hs-callout--hidden');
+        dot.style.display  = 'none';
+        line.style.display = 'none';
+        card.classList.add('hs-callout--hidden');
       }
     }
   };
@@ -242,7 +282,8 @@ export function player(container, opts = {}) {
       buildCallouts(anim.callouts);
       console.log(
         `[HoloSplat] animation loaded: ${anim.frameCount} frames @ ${anim.fps}fps, ` +
-        `${anim.callouts.length} callout(s):`, anim.callouts.map(c => c.id)
+        `${anim.callouts.length} callout(s):`, anim.callouts.map(c => c.id),
+        '| markers:', anim.markers
       );
       return anim;
     } catch (err) {
@@ -281,9 +322,10 @@ export function player(container, opts = {}) {
     setBackground(bg)        { viewer.setBackground(bg); },
     setSplatScale(s)         { viewer.setSplatScale(s); },
     setAutoRotate(v)         { viewer.setAutoRotate(v); },
+    setFlipY(v)              { viewer.setFlipY(v); },
     setAnimationPaused(v)    { viewer.setAnimationPaused(v); },
     resetCamera()            { viewer.resetCamera(); },
-    callout(id)              { return calloutDivs[id] ?? null; },
+    callout(id)              { return calloutDivs[id]?.card ?? null; },
     get camera()             { return viewer.camera; },
     get animation()          { return viewer._animation; },
     get animationPaused()    { return viewer._animPaused; },

@@ -16,6 +16,9 @@ export class OrbitCamera {
     this.radius = 5;
     this.target = [0, 0, 0];
 
+    // Set to false to disable all input handling (e.g. when scroll-scene owns playback).
+    this.enabled = true;
+
     this._drag    = null;      // { x, y, button }
     this._touches = [];
 
@@ -65,6 +68,7 @@ export class OrbitCamera {
   // ── Mouse handlers ─────────────────────────────────────────────────────────
 
   _mouseDown(e) {
+    if (!this.enabled) return;
     this._drag = { x: e.clientX, y: e.clientY, button: e.button };
     e.preventDefault();
   }
@@ -86,6 +90,7 @@ export class OrbitCamera {
   }
 
   _wheel(e) {
+    if (!this.enabled) return;
     e.preventDefault();
     const factor = e.deltaY > 0 ? 1.1 : 0.9;
     this.radius = Math.max(0.01, this.radius * factor);
@@ -94,11 +99,13 @@ export class OrbitCamera {
   // ── Touch handlers ─────────────────────────────────────────────────────────
 
   _touchStart(e) {
+    if (!this.enabled) return;
     e.preventDefault();
     this._touches = Array.from(e.touches).map(t => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
   }
 
   _touchMove(e) {
+    if (!this.enabled) return;
     e.preventDefault();
     const prev = this._touches;
     const curr = Array.from(e.touches).map(t => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
@@ -214,6 +221,8 @@ export class OrbitCamera {
     ];
     const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) * 0.5;
     this.radius = extent / Math.tan(this.fov * 0.5) * 1.2;
+    this.theta  = 0;
+    this.phi    = 0.2;
   }
 }
 

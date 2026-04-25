@@ -31,10 +31,11 @@ FILES = [
     'src/renderer.js',
     'src/viewer.js',
     'src/player.js',
+    'src/scroll-scene.js',
     'src/index.js',
 ]
 
-EXPORTS = 'create, player, Viewer, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly'
+EXPORTS = 'create, player, scrollScene, Viewer, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly'
 BANNER  = f'/*! HoloSplat v{VERSION} – WebGPU Gaussian Splat viewer | MIT */'
 
 # ── Source transforms ─────────────────────────────────────────────────────────

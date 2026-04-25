@@ -25,6 +25,7 @@ export class Viewer {
       far        = 2000,
       splatScale = 1.0,
       autoRotate = false,
+      flipY      = false,
       onProgress,
       onError,
     } = options;
@@ -34,6 +35,7 @@ export class Viewer {
     this._onError    = onError;
     this._autoRotate = autoRotate;
     this._splatScale = splatScale;
+    this._flipY      = flipY;
 
     this._renderer   = new Renderer(this._canvas, background);
     this._camera     = new OrbitCamera({ fov, near, far });
@@ -71,6 +73,8 @@ export class Viewer {
     const { data, count } = await loader(url, p => {
       if (this._onProgress) this._onProgress(p);
     });
+
+    if (this._flipY) flipYInPlace(data, count);
 
     this._gaussians = data;
     this._numSplats = count;
@@ -111,6 +115,17 @@ export class Viewer {
 
   setAutoRotate(v) { this._autoRotate = v; }
 
+  setFlipY(enabled) {
+    if (!!enabled === this._flipY) return;
+    this._flipY = !!enabled;
+    if (this._gaussians) {
+      flipYInPlace(this._gaussians, this._numSplats);
+      this._renderer.uploadGaussians(this._gaussians, this._numSplats);
+      this._camera.fitScene(this._gaussians, this._numSplats);
+    }
+  }
+
+
   /** Freeze / unfreeze animation playback. When paused, camera responds to user input. */
   setAnimationPaused(paused) { this._animPaused = paused; }
 
@@ -121,9 +136,9 @@ export class Viewer {
   /** Attach a pre-loaded Animation instance. Pass null to detach. */
   setAnimation(anim) {
     this._animation = anim;
-    if (anim?.fov != null) {
-      this._camera.fov = anim.fov * Math.PI / 180;
-    }
+    if (anim?.fov  != null) this._camera.fov  = anim.fov  * Math.PI / 180;
+    if (anim?.near != null) this._camera.near = anim.near;
+    if (anim?.far  != null) this._camera.far  = anim.far;
   }
 
   /** Fetch, parse, and attach an animation from a URL. */
@@ -186,8 +201,10 @@ export class Viewer {
     const w = this._canvas.width;
     const h = this._canvas.height;
 
-    if (this._animation && !this._animPaused) {
-      this._animation.tick(dt);
+    if (this._animation) {
+      // Always advance time when playing; when paused (e.g. scroll-driven) only
+      // skip the tick so that seekFrame() changes are still applied to the camera.
+      if (!this._animPaused) this._animation.tick(dt);
       const { eye, target } = this._animation.getCameraFrame();
       this._camera.setFromLookAt(eye, target);
     } else if (this._autoRotate) {
@@ -214,7 +231,7 @@ export class Viewer {
     const order = this._sort(this._depths, this._numSplats);
 
     // Upload uniforms and order, then draw
-    this._renderer.updateUniforms({ view, proj, width: w, height: h, focal });
+    this._renderer.updateUniforms({ view, proj, width: w, height: h, focal, near: this._camera.near });
     this._renderer.updateOrder(order, this._numSplats);
     this._renderer.draw();
   }
@@ -252,6 +269,23 @@ export class Viewer {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+function flipYInPlace(data, count) {
+  // Applies a 180° rotation around the X axis to every Gaussian in canonical layout.
+  // Converts Y-down scenes (OpenCV/COLMAP convention) to Y-up (OpenGL/HoloSplat convention).
+  // Position: (x, y, z) → (x, -y, -z)
+  // Quaternion pre-multiply by (1,0,0,0): (qx,qy,qz,qw) → (qw,-qz,qy,-qx)
+  for (let i = 0; i < count; i++) {
+    const d = i * 16;
+    data[d + 1] = -data[d + 1];
+    data[d + 2] = -data[d + 2];
+    const qx = data[d + 12], qy = data[d + 13], qz = data[d + 14], qw = data[d + 15];
+    data[d + 12] =  qw;
+    data[d + 13] = -qz;
+    data[d + 14] =  qy;
+    data[d + 15] = -qx;
+  }
+}
 
 function resolveCanvas(canvas) {
   if (!canvas) throw new Error('HoloSplat: canvas option is required');

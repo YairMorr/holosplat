@@ -14,7 +14,12 @@
  *   ],
  *   "callouts" : [            // world-space points to project onto the screen
  *     { "id": "label", "pos": [x, y, z] }
- *   ]
+ *   ],
+ *   "markers" : {             // Blender timeline markers → frame numbers (0-based)
+ *     "intro"       : 0,      // used by scroll-scene data-from / data-to attributes
+ *     "desk_reveal" : 72,
+ *     "end"         : 119
+ *   }
  * }
  *
  * Coordinates are in viewer Y-up space. The Blender export script converts
@@ -33,8 +38,18 @@ export class Animation {
     this.fps        = data.fps        ?? 24;
     this.frameCount = data.frameCount ?? Math.floor(data.frames.length / 6);
     this.fov        = data.fov        ?? null;   // null = keep player fov
+    this.near       = data.near       ?? null;   // null = keep player near
+    this.far        = data.far        ?? null;   // null = keep player far
     this.callouts   = data.callouts   ?? [];
     this.loop       = true;
+
+    // Named timeline markers: { markerName: frameNumber }
+    // Accepts either object { name: frame } or array [{ name, frame }]
+    if (Array.isArray(data.markers)) {
+      this.markers = Object.fromEntries(data.markers.map(m => [m.name, m.frame]));
+    } else {
+      this.markers = data.markers ?? {};
+    }
 
     // Typed array: 6 floats per frame [ex ey ez fx fy fz]
     this._frames  = new Float32Array(data.frames);
@@ -56,6 +71,16 @@ export class Animation {
 
   seek(seconds) {
     this._time = Math.max(0, Math.min(this.duration, seconds));
+  }
+
+  /** Seek to an exact frame number (0-based). */
+  seekFrame(frame) {
+    this._time = Math.max(0, Math.min(this.frameCount - 1, frame)) / this.fps;
+  }
+
+  /** Current playback position as a frame number (may be fractional). */
+  get frame() {
+    return this._time * this.fps;
   }
 
   /**

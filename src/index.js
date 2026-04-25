@@ -38,6 +38,7 @@
 import { Viewer } from './viewer.js';
 import { player } from './player.js';
 import { Animation, loadAnimation } from './animation.js';
+import { scrollScene } from './scroll-scene.js';
 import { compressToSpz, encodeSpz } from './compress.js';
 import { parseSplat } from './loaders/splat-loader.js';
 import { parsePly } from './loaders/ply-loader.js';
@@ -69,10 +70,11 @@ export async function create(options = {}) {
     setBackground(bg)   { viewer.setBackground(bg); },
     setSplatScale(s)    { viewer.setSplatScale(s); },
     setAutoRotate(v)    { viewer.setAutoRotate(v); },
+    setFlipY(v)         { viewer.setFlipY(v); },
     resetCamera()       { viewer.resetCamera(); },
     get camera()        { return viewer.camera; },
   };
 }
 
-// Also expose Viewer class, animation, parsers, and compression utilities
-export { Viewer, player, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly };
+// Also expose Viewer class, animation, scroll scene, parsers, and compression utilities
+export { Viewer, player, scrollScene, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly };

@@ -3,124 +3,291 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HoloSplat Test</title>
+  <title>HoloSplat – Scroll Test</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #111; height: 100dvh; display: flex; flex-direction: column; }
-    #scene { flex: 1; position: relative; }
 
-    /* ── Controls overlay ─────────────────────────────── */
-    #controls {
-      position: absolute; bottom: 12px; left: 12px;
-      display: flex; align-items: center; gap: 10px;
-      background: rgba(0,0,0,.55); backdrop-filter: blur(6px);
+    html, body {
+      width: 100%;
+      background: #0e0e0e;
+      font-family: system-ui, sans-serif;
+      color: #eee;
+    }
+
+    /* Force stage to fill the full viewport — belt-and-suspenders over the
+       injected .hs-stage rule, in case parent widths are constrained. */
+    #stage {
+      width: 100vw !important;
+      height: 100vh !important;
+    }
+
+    /* ── Captions (inside .hs-act / .hs-hold) ───────────── */
+    .hs-caption {
+      position: sticky;
+      top: 50vh;
+      transform: translateY(-50%);
+      text-align: left;
+      pointer-events: auto;
+      z-index: 20;
+      padding-left: 48px;
+    }
+    .hs-caption .label {
+      display: inline-block;
+      background: rgba(0,0,0,.65);
+      backdrop-filter: blur(10px);
       border: 1px solid rgba(255,255,255,.08);
-      border-radius: 8px; padding: 8px 14px;
-      font: 12px/1 system-ui, sans-serif; color: #ccc;
-      z-index: 10;
+      border-radius: 12px;
+      padding: 18px 28px;
+      max-width: 420px;
     }
-    #controls label { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
-    .ctrl-btn {
-      padding: 4px 12px; border-radius: 5px; border: none; cursor: pointer;
-      font: 12px system-ui, sans-serif; font-weight: 600;
-      transition: background .15s;
+    .hs-caption .label h2 {
+      font-size: 1.3rem; font-weight: 700;
+      margin-bottom: 6px;
     }
-    #btn-anim { background: #3a7aff; color: #fff; }
-    #btn-anim.paused { background: #444; }
-    #btn-reset { background: #333; color: #ccc; }
-    #scale-slider { width: 90px; accent-color: #3a7aff; cursor: pointer; }
-    #scale-val { min-width: 2.5ch; text-align: right; }
+    .hs-caption .label p {
+      font-size: .88rem; color: #999; line-height: 1.6;
+    }
+    .hs-caption .tag {
+      display: inline-block;
+      margin-top: 10px;
+      font-size: .7rem; color: #3a7aff;
+      letter-spacing: .08em; text-transform: uppercase;
+    }
 
-    /* ── Log ──────────────────────────────────────────── */
-    #log {
-      height: 120px; overflow-y: auto; background: #000;
-      font: 12px/1.6 monospace; padding: 8px 12px; color: #0f0;
-      border-top: 1px solid #222; flex-shrink: 0;
+    /* ── Debug HUD ───────────────────────────────────────── */
+    #hud {
+      position: fixed; bottom: 14px; right: 14px;
+      background: rgba(0,0,0,.7); backdrop-filter: blur(8px);
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 8px; padding: 10px 14px;
+      font: 11px/1.8 monospace; color: #8af;
+      z-index: 999; min-width: 190px;
+      pointer-events: none;
     }
-    #log .err { color: #f55; }
+    #hud .row { display: flex; justify-content: space-between; gap: 16px; align-items: center; }
+    #hud .val { color: #fff; }
+    #hud .act-label { color: #fa0; }
+    #hud input[type=range] { width: 90px; accent-color: #3a7aff; pointer-events: auto; cursor: pointer; }
+
+    /* ── Outro ───────────────────────────────────────────── */
+    #outro {
+      height: 100vh;
+      display: flex; align-items: center; justify-content: center;
+      text-align: center; background: #0e0e0e;
+      position: relative; z-index: 10;
+    }
+    #outro p { color: #444; font-size: .9rem; }
   </style>
 </head>
 <body>
 
-<div id="scene">
-  <div id="controls">
-    <button id="btn-anim" class="ctrl-btn">⏸ Animation</button>
-    <label>
-      Scale
-      <input id="scale-slider" type="range" min="0.1" max="3" step="0.05" value="1">
-      <span id="scale-val">1.00</span>
-    </label>
-    <button id="btn-reset" class="ctrl-btn">Reset cam</button>
+<!-- ── Scroll scene starts at the top of the page ──────── -->
+<div class="hs-scene" id="scene">
+<link rel="stylesheet" href="callouts.css">
+  <div class="hs-stage" id="stage">
+<div class="hs-callout hs-callout--right" data-id="parking-lot"
+       data-offset-x="90" data-offset-y="-35">
+    <h3>Keyboard</h3>
+    <p>Mechanical switches, 65% layout.</p>
   </div>
+    
+  </div>
+
+  <div class="hs-track">
+
+    <!-- ── Scene 1 ───────────────────────────────────────── -->
+    <div class="hs-act" id="act-1" style="height:250vh">
+      <div class="hs-caption hs-caption--hidden">
+        <div class="label">
+          <h2>Scene 1</h2>
+          <p>Camera sweeps in to reveal the scene.</p>
+          <span class="tag"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Scene 2 ───────────────────────────────────────── -->
+    <div class="hs-act" id="act-2" style="height:250vh">
+      <div class="hs-caption hs-caption--hidden">
+        <div class="label">
+          <h2>Scene 2</h2>
+          <p>Second segment of the animation.</p>
+          <span class="tag"></span>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ── Scene 3 ───────────────────────────────────────── -->
+    <div class="hs-act" id="act-3" style="height:250vh">
+      <div class="hs-caption hs-caption--hidden">
+        <div class="label">
+          <h2>Scene 3</h2>
+          <p>Third segment of the animation.</p>
+          <span class="tag"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Scene 4 ───────────────────────────────────────── -->
+    <div class="hs-act" id="act-4" style="height:250vh">
+      <div class="hs-caption hs-caption--hidden">
+        <div class="label">
+          <h2>Scene 4</h2>
+          <p>Final segment of the animation.</p>
+          <span class="tag"></span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /.hs-track -->
+</div><!-- /.hs-scene -->
+
+<div id="outro">
+  <p>End of scroll scene</p>
 </div>
-<div id="log"></div>
+
+<!-- ── Debug HUD ─────────────────────────────────────────── -->
+<div id="hud">
+  <div class="row"><span>frame</span><span class="val" id="hud-frame">—</span></div>
+  <div class="row"><span>total</span><span class="val" id="hud-total">—</span></div>
+  <div class="row"><span>act</span><span class="act-label" id="hud-act">—</span></div>
+  <div class="row"><span>progress</span><span class="val" id="hud-progress">—</span></div>
+  <div class="row"><span>markers</span><span class="val" id="hud-markers">—</span></div>
+  <div class="row"><span>scale</span>
+    <span class="val"><input type="range" id="scale-slider" min="0.1" max="3" step="0.05" value="1"> <span id="scale-val">1.00</span></span>
+  </div>
+  <div class="row"><span>flip Y</span><span class="val"><input type="checkbox" id="flip-toggle" style="pointer-events:auto;cursor:pointer;accent-color:#3a7aff"></span></div>
+  <div class="row"><span>pp blend</span>
+    <span class="val"><input type="range" id="blend-slider" min="0" max="49" step="1" value="15"> <span id="blend-val">15%</span></span>
+  </div>
+  <div style="border-top:1px solid #333;margin:4px 0"></div>
+  <div class="row"><span>type</span><span class="val">perspective</span></div>
+  <div class="row"><span>fov</span><span class="val" id="hud-fov">—</span></div>
+  <div class="row"><span>near</span><span class="val" id="hud-near">—</span></div>
+  <div class="row"><span>far</span><span class="val" id="hud-far">—</span></div>
+  <div class="row"><span>dist</span><span class="val" id="hud-dist">—</span></div>
+  <div class="row"><span>focal px</span><span class="val" id="hud-focal">—</span></div>
+</div>
 
 <script src="../dist/holosplat.iife.js"></script>
 <script>
-  // ── On-page log ──────────────────────────────────────
-  const log = document.getElementById('log');
-  function out(msg, isErr) {
-    const line = document.createElement('div');
-    if (isErr) line.className = 'err';
-    line.textContent = msg;
-    log.appendChild(line);
-    log.scrollTop = log.scrollHeight;
-  }
-  const _log   = console.log.bind(console);
-  const _error = console.error.bind(console);
-  console.log   = (...a) => { _log(...a);   out(a.join(' ')); };
-  console.error = (...a) => { _error(...a); out(a.join(' '), true); };
+  const SCENE_URL = 'http://localhost:8080/scenes/vegetables.spz';
+  const ANIM_URL = 'http://localhost:8080/blender/vegetables.json';
 
-  out('Initialising player...');
+  const p = HoloSplat.player('#stage', { src: SCENE_URL, animation: ANIM_URL, background: 'transparent' });
 
-  // ── Player ───────────────────────────────────────────
-  const p = HoloSplat.player('#scene', {
-    src:       'https://yairmorr.fra1.cdn.digitaloceanspaces.com/desk_2.spz',
-    animation: 'https://yairmorr.fra1.cdn.digitaloceanspaces.com/desk_2.json',
-    onLoad() {
-      out('Scene loaded.');
-      const cam = p.camera;
-      out(`Scene center:  x=${cam.target[0].toFixed(3)}  y=${cam.target[1].toFixed(3)}  z=${cam.target[2].toFixed(3)}`);
-      out(`Camera radius: ${cam.radius.toFixed(3)}`);
+  // onReady fires before scrollScene parses the act elements, so data-from/to
+  // are guaranteed to be set before buildActs() reads them — no race condition.
+  const ctrl = HoloSplat.scrollScene(document.getElementById('scene'), p, {
+    onReady(anim) {
+      // Sort markers by frame number → [ 'tom', 'jerry', 'bob' ]
+      const markerNames = Object.entries(anim.markers)
+        .sort(([, a], [, b]) => a - b)
+        .map(([name]) => name);
+
+      const acts  = [...document.querySelectorAll('.hs-track .hs-act')];
+      const holds = [...document.querySelectorAll('.hs-track .hs-hold')];
+
+      // act[i]: markers[i] → markers[i+1]  (last act goes to final frame)
+      acts.forEach((act, i) => {
+        if (i >= markerNames.length) return;   // more acts than markers — skip
+        const from = markerNames[i];
+        const to   = i + 1 < markerNames.length ? markerNames[i + 1] : anim.frameCount - 1;
+        act.dataset.from = from;
+        act.dataset.to   = to;
+        const tag = act.querySelector('.tag');
+        if (tag) tag.textContent = `${from} → ${to}`;
+      });
+      // hold[i]: frozen at the marker that ends act[i] = markers[i+1]
+      holds.forEach((hold, i) => {
+        if (i + 1 >= markerNames.length) return;  // no matching marker — skip
+        hold.dataset.frame = markerNames[i + 1];
+        const p   = hold.querySelector('p');
+        const tag = hold.querySelector('.tag');
+        if (p)   p.textContent   = `Frozen at ${markerNames[i + 1]}.`;
+        if (tag) tag.textContent = markerNames[i + 1];
+      });
+
+      document.getElementById('hud-total').textContent = anim.frameCount;
+      document.getElementById('hud-markers').textContent =
+        markerNames.length ? markerNames.join(', ') : 'none';
     },
-    onProgress(v){ out(`Loading scene: ${(v*100).toFixed(0)}%`); },
-    onError(err) { out('ERROR: ' + err.message, true); },
   });
 
-  // Log anim frame 0 once animation is ready
-  let logged = false;
-  const pollAnim = setInterval(() => {
-    const anim = p.animation;
-    if (!anim || logged) return;
-    logged = true;
-    clearInterval(pollAnim);
-    const frame0 = anim.getCameraFrame();
-    out(`Anim frame 0 eye:    x=${frame0.eye[0].toFixed(3)}  y=${frame0.eye[1].toFixed(3)}  z=${frame0.eye[2].toFixed(3)}`);
-    out(`Anim frame 0 target: x=${frame0.target[0].toFixed(3)}  y=${frame0.target[1].toFixed(3)}  z=${frame0.target[2].toFixed(3)}`);
-  }, 200);
-
-  // ── Controls ─────────────────────────────────────────
-  const btnAnim = document.getElementById('btn-anim');
-  btnAnim.addEventListener('click', () => {
-    const paused = !p.animationPaused;
-    p.setAnimationPaused(paused);
-    btnAnim.textContent = paused ? '▶ Animation' : '⏸ Animation';
-    btnAnim.classList.toggle('paused', paused);
-    out(paused ? 'Animation paused — free camera.' : 'Animation resumed.');
-  });
-
-  const slider   = document.getElementById('scale-slider');
-  const scaleVal = document.getElementById('scale-val');
-  slider.addEventListener('input', () => {
-    const v = parseFloat(slider.value);
-    scaleVal.textContent = v.toFixed(2);
+  // ── Scale slider ─────────────────────────────────────────
+  const scaleSlider = document.getElementById('scale-slider');
+  const scaleVal    = document.getElementById('scale-val');
+  scaleSlider.addEventListener('input', () => {
+    const v = parseFloat(scaleSlider.value);
     p.setSplatScale(v);
+    scaleVal.textContent = v.toFixed(2);
   });
 
-  document.getElementById('btn-reset').addEventListener('click', () => {
-    p.resetCamera();
-    out('Camera reset to scene fit.');
+  // ── Flip Y toggle ─────────────────────────────────────────
+  document.getElementById('flip-toggle').addEventListener('change', e => {
+    p.setFlipY(e.target.checked);
   });
+
+  // ── Pingpong blend slider ─────────────────────────────────
+  const blendSlider = document.getElementById('blend-slider');
+  const blendVal    = document.getElementById('blend-val');
+  blendSlider.addEventListener('input', () => {
+    const v = parseInt(blendSlider.value, 10);
+    ctrl.setPingpongBlend(v / 100);
+    blendVal.textContent = v + '%';
+  });
+
+  // ── Debug HUD ────────────────────────────────────────────
+  const ACT_LABELS = {
+    'act-1':  'Scene 1',
+    'hold-1': 'Hold 1',
+    'act-2':  'Scene 2',
+    'hold-2': 'Hold 2',
+    'act-3':  'Scene 3',
+    'act-4':  'Scene 4',
+  };
+
+  (function hudLoop() {
+    requestAnimationFrame(hudLoop);
+
+    // ── Camera info (always live) ─────────────────────────
+    const cam = p.camera;
+    if (cam) {
+      const h = document.getElementById('stage').clientHeight || 1;
+      document.getElementById('hud-fov').textContent   = (cam.fov * 180 / Math.PI).toFixed(1) + '°';
+      document.getElementById('hud-near').textContent  = cam.near.toFixed(4);
+      document.getElementById('hud-far').textContent   = cam.far.toFixed(1);
+      document.getElementById('hud-dist').textContent  = cam.radius.toFixed(3);
+      document.getElementById('hud-focal').textContent = cam.focalLength(h).toFixed(1);
+    }
+
+    // ── Animation info ────────────────────────────────────
+    const anim = p.animation;
+    if (!anim) return;
+
+    document.getElementById('hud-frame').textContent = anim.frame.toFixed(1);
+
+    const track = document.querySelector('.hs-track');
+    let activeId = '—', activeProgress = 0, activeEl = null;
+    for (const el of track.children) {
+      const top = el.getBoundingClientRect().top;
+      const q   = Math.max(0, Math.min(1, -top / (el.offsetHeight || 1)));
+      if (q > 0) {
+        activeId       = el.id;
+        activeProgress = q;
+        activeEl       = el;
+        if (q < 1) break;
+      }
+    }
+
+    const isPingpong = activeEl?.dataset.from === 'pingpong-start';
+    document.getElementById('hud-act').textContent = isPingpong
+      ? `pingpong ↔ ${Math.round(ctrl.pingpongBlend * 100)}%`
+      : (ACT_LABELS[activeId] ?? activeId);
+    document.getElementById('hud-progress').textContent =
+      activeId !== '—' ? (activeProgress * 100).toFixed(1) + '%' : '—';
+  })();
 </script>
 </body>
 </html>

@@ -5,4 +5,6 @@ __pycache__/
 # Scene files (kept local, not committed)
 /scenes/*.*
 *.splat
-*.ply*.blend1
+*.ply
+*.blend
+*.blend1

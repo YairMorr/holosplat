@@ -46,7 +46,12 @@ export class Renderer {
     if (!navigator.gpu) throw new Error('WebGPU is not supported in this browser.');
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error('No WebGPU adapter found.');
-    this.device = await adapter.requestDevice();
+    this.device = await adapter.requestDevice({
+      requiredLimits: {
+        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+        maxBufferSize:               adapter.limits.maxBufferSize,
+      },
+    });
 
     this.context = this.canvas.getContext('webgpu');
     this._format = navigator.gpu.getPreferredCanvasFormat();
@@ -86,7 +91,7 @@ export class Renderer {
 
   // ── Per-frame updates ──────────────────────────────────────────────────────
 
-  updateUniforms({ view, proj, width, height, focal }) {
+  updateUniforms({ view, proj, width, height, focal, near = 0.1 }) {
     const u = this._uniforms;
     u.set(view,   U_VIEW);
     u.set(proj,   U_PROJ);
@@ -94,6 +99,7 @@ export class Renderer {
     u[U_VIEWPORT + 1] = height;
     u[U_FOCAL]        = focal;
     u[U_FOCAL + 1]    = focal;
+    u[U_PARAMS + 1]   = near;
     this.device.queue.writeBuffer(this._uniformBuf, 0, u);
   }
 

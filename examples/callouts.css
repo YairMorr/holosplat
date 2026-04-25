@@ -1,0 +1,90 @@
+/*
+ * HoloSplat — Callout default styles
+ *
+ * Link this in your page:
+ *   <link rel="stylesheet" href="callouts.css">
+ *
+ * Then write your callout cards anywhere in the player container:
+ *
+ *   <div class="hs-callout hs-callout--right" data-id="screen"
+ *        data-offset-x="90" data-offset-y="-40">
+ *     <h3>Screen</h3>
+ *     <p>4K 120Hz display.</p>
+ *   </div>
+ *
+ * The player finds each card by data-id, moves it into the callout
+ * overlay, and positions it at (anchorX + offsetX, anchorY + offsetY).
+ * Use data-offset-x / data-offset-y (px) to control the card position
+ * relative to its 3D anchor dot. Positive X = right, negative = left.
+ * Positive Y = down, negative = up.
+ *
+ * Use the directional modifier classes to snap the card edge to the
+ * line endpoint:
+ *   .hs-callout--right   card left-edge at offset point
+ *   .hs-callout--left    card right-edge at offset point
+ *   .hs-callout--above   card bottom-edge at offset point
+ *   .hs-callout--below   card top-edge at offset point
+ *   (default: card centered on offset point)
+ */
+
+/* ── Card ──────────────────────────────────────────────────────────── */
+
+.hs-callout {
+  background: rgba(10, 10, 20, 0.78);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 0.78rem;
+  color: #ddd;
+  line-height: 1.55;
+  max-width: 190px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+  /* Default: centered on the offset point */
+  transform: translate(-50%, -50%);
+  transition: opacity 0.15s;
+}
+
+.hs-callout h3 {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #fff;
+  margin: 0 0 4px;
+}
+
+.hs-callout p {
+  margin: 0;
+  color: #999;
+}
+
+/* ── Directional variants ───────────────────────────────────────────── */
+
+/* Card to the RIGHT — left edge meets line endpoint */
+.hs-callout--right  { transform: translate(8px, -50%); }
+
+/* Card to the LEFT — right edge meets line endpoint */
+.hs-callout--left   { transform: translate(calc(-100% - 8px), -50%); }
+
+/* Card ABOVE — bottom edge meets line endpoint */
+.hs-callout--above  { transform: translate(-50%, calc(-100% - 8px)); }
+
+/* Card BELOW — top edge meets line endpoint */
+.hs-callout--below  { transform: translate(-50%, 8px); }
+
+/* ── Anchor dot ─────────────────────────────────────────────────────── */
+
+.hs-dot {
+  fill: #3a7aff;
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+/* ── Connector line ──────────────────────────────────────────────────── */
+
+.hs-line {
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}

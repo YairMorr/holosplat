@@ -31,7 +31,7 @@ struct Uniforms {
   proj       : mat4x4<f32>,
   viewport   : vec2<f32>,
   focal      : vec2<f32>,
-  params     : vec4<f32>,  // .x = splatScale
+  params     : vec4<f32>,  // .x = splatScale  .y = near (view-space units)
 };
 
 struct Gaussian {
@@ -91,8 +91,14 @@ fn vs_main(
   let viewPos4 = uniforms.view * vec4<f32>(g.pos, 1.0);
   let t = viewPos4.xyz;
 
-  // Discard if behind near plane
-  if t.z > -0.1 { return degen(); }
+  // Discard if at or behind near plane
+  let near = uniforms.params.y;
+  if t.z > -near { return degen(); }
+
+  // Near-depth fade: fade out splats within 3× the near distance so that
+  // close-up splats don't cover the entire screen (matches Blender's behaviour).
+  let depth     = -t.z;
+  let nearFade  = clamp((depth - near) / (near * 2.0), 0.0, 1.0);
 
   // ── 3-D covariance ────────────────────────────────────────────────────────
   let splatScale = uniforms.params.x;
@@ -134,9 +140,15 @@ fn vs_main(
   let conic = vec3<f32>(c*inv, -b*inv, a*inv);
 
   // ── Bounding radius (3σ of largest eigenvalue) ────────────────────────────
-  let mid    = 0.5 * (a + c);
-  let disc   = sqrt(max(0.1, mid*mid - det));
-  let radius = ceil(3.0 * sqrt(mid + disc));
+  let mid      = 0.5 * (a + c);
+  let disc     = sqrt(max(0.1, mid*mid - det));
+  let rawRadius = ceil(3.0 * sqrt(mid + disc));
+
+  // Clamp screen-space radius: splats larger than half the viewport height
+  // are faded out and capped, preventing nearby splats from covering the screen.
+  let maxRadius = uniforms.viewport.y * 0.5;
+  let sizeFade  = clamp(maxRadius / max(rawRadius, 1.0), 0.0, 1.0);
+  let radius    = min(rawRadius, maxRadius);
 
   // ── Screen-space quad placement ───────────────────────────────────────────
   let clip    = uniforms.proj * viewPos4;
@@ -146,7 +158,7 @@ fn vs_main(
 
   var o: VOut;
   o.clipPos = vec4<f32>(ndcXY + ndcOff, clip.z / clip.w, 1.0);
-  o.color   = g.color;
+  o.color   = vec4<f32>(g.color.rgb, g.color.a * nearFade * sizeFade);
   o.uv      = pixOff;
   o.conic   = conic;
   return o;
@@ -182,6 +194,9 @@ class OrbitCamera {
     this.phi    = 0.2;         // elevation (clamped away from poles)
     this.radius = 5;
     this.target = [0, 0, 0];
+
+    // Set to false to disable all input handling (e.g. when scroll-scene owns playback).
+    this.enabled = true;
 
     this._drag    = null;      // { x, y, button }
     this._touches = [];
@@ -232,6 +247,7 @@ class OrbitCamera {
   // ── Mouse handlers ─────────────────────────────────────────────────────────
 
   _mouseDown(e) {
+    if (!this.enabled) return;
     this._drag = { x: e.clientX, y: e.clientY, button: e.button };
     e.preventDefault();
   }
@@ -253,6 +269,7 @@ class OrbitCamera {
   }
 
   _wheel(e) {
+    if (!this.enabled) return;
     e.preventDefault();
     const factor = e.deltaY > 0 ? 1.1 : 0.9;
     this.radius = Math.max(0.01, this.radius * factor);
@@ -261,11 +278,13 @@ class OrbitCamera {
   // ── Touch handlers ─────────────────────────────────────────────────────────
 
   _touchStart(e) {
+    if (!this.enabled) return;
     e.preventDefault();
     this._touches = Array.from(e.touches).map(t => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
   }
 
   _touchMove(e) {
+    if (!this.enabled) return;
     e.preventDefault();
     const prev = this._touches;
     const curr = Array.from(e.touches).map(t => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
@@ -381,6 +400,8 @@ class OrbitCamera {
     ];
     const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) * 0.5;
     this.radius = extent / Math.tan(this.fov * 0.5) * 1.2;
+    this.theta  = 0;
+    this.phi    = 0.2;
   }
 }
 
@@ -425,67 +446,158 @@ function perspective(fovY, aspect, near, far, out) {
 
 // ── src/sorter.js ────────────────────────────
 /**
- * 16-bit two-pass radix sort for depth ordering.
+ * Async 32-bit radix sort for depth ordering.
  *
- * Sorts indices ascending by depth value (smallest depth = farthest = rendered first).
- * All buffers are pre-allocated at construction time — zero allocations per frame.
+ * Converts IEEE-754 view-space depths (always negative) to sortable uint32
+ * keys by flipping all bits — gives full float precision with zero per-frame
+ * rescaling, eliminating the shimmer caused by the previous 16-bit approach.
+ *
+ * 4 passes × 8-bit buckets.  Runs in a Web Worker so the main thread never
+ * blocks on sorting.  Falls back to synchronous if Workers are unavailable.
  */
-function createSorter(maxN) {
-  const keys0   = new Uint16Array(maxN);
-  const keys1   = new Uint16Array(maxN);
-  const idx0    = new Uint32Array(maxN);
-  const idx1    = new Uint32Array(maxN);
-  const counts  = new Int32Array(256);
-  const pfx     = new Int32Array(256);
 
-  /**
-   * @param {Float32Array} depths  – one depth value per Gaussian
-   * @param {number}       N       – number of Gaussians
-   * @returns {Uint32Array}        – sorted indices (view into pre-alloc buffer)
-   */
-  return function sort(depths, N) {
-    // ── Quantize depths to uint16 ──────────────────────────────────────────
-    let minD = depths[0], maxD = depths[0];
-    for (let i = 1; i < N; i++) {
-      if (depths[i] < minD) minD = depths[i];
-      if (depths[i] > maxD) maxD = depths[i];
-    }
-    const range = maxD - minD;
-    const scale = range > 0 ? 65535 / range : 0;
+// ── Shared sort logic (used by both worker and sync fallback) ─────────────────
 
+const SORT_FN = `
+function radixSort32(keys, idx, tmp_k, tmp_i, counts, pfx, N) {
+  for (let pass = 0; pass < 4; pass++) {
+    const shift = pass * 8;
+    counts.fill(0);
+    for (let i = 0; i < N; i++) counts[(keys[i] >>> shift) & 0xff]++;
+    pfx[0] = 0;
+    for (let i = 1; i < 256; i++) pfx[i] = pfx[i-1] + counts[i-1];
     for (let i = 0; i < N; i++) {
-      keys0[i] = Math.round((depths[i] - minD) * scale) | 0;
+      const b = (keys[i] >>> shift) & 0xff;
+      tmp_k[pfx[b]]   = keys[i];
+      tmp_i[pfx[b]++] = idx[i];
+    }
+    // swap
+    const k = keys; keys = tmp_k; tmp_k = k;
+    const x = idx;  idx  = tmp_i; tmp_i = x;
+  }
+  // after 4 passes (even) idx holds the result
+  return idx;
+}
+`;
+
+// ── Worker source ─────────────────────────────────────────────────────────────
+
+const WORKER_SRC = SORT_FN + `
+const u32 = new Uint32Array(1);
+const f32 = new Float32Array(u32.buffer);
+
+let keys0, keys1, idx0, idx1, counts, pfx, allocN = 0;
+function alloc(N) {
+  if (N <= allocN) return;
+  allocN = N;
+  keys0  = new Uint32Array(N);
+  keys1  = new Uint32Array(N);
+  idx0   = new Uint32Array(N);
+  idx1   = new Uint32Array(N);
+  counts = new Uint32Array(256);
+  pfx    = new Uint32Array(256);
+}
+
+self.onmessage = function(e) {
+  const depths = e.data.depths;
+  const N      = e.data.N;
+  alloc(N);
+
+  // Convert negative floats → sortable uint32 by flipping all bits
+  const dv = new DataView(depths.buffer);
+  for (let i = 0; i < N; i++) {
+    keys0[i] = dv.getUint32(i * 4, true) ^ 0xffffffff;
+    idx0[i]  = i;
+  }
+
+  const sorted = radixSort32(keys0, idx0, keys1, idx1, counts, pfx, N);
+  const result = sorted.slice(0, N);
+  self.postMessage({ order: result }, [result.buffer]);
+};
+`;
+
+// ── Synchronous fallback ──────────────────────────────────────────────────────
+
+function createSyncSorter(maxN) {
+  let keys0  = new Uint32Array(maxN);
+  let keys1  = new Uint32Array(maxN);
+  let idx0   = new Uint32Array(maxN);
+  let idx1   = new Uint32Array(maxN);
+  const counts = new Uint32Array(256);
+  const pfx    = new Uint32Array(256);
+
+  // inline radixSort32
+  function sort(depths, N) {
+    const dv = new DataView(depths.buffer);
+    for (let i = 0; i < N; i++) {
+      keys0[i] = dv.getUint32(i * 4, true) ^ 0xffffffff;
       idx0[i]  = i;
     }
+    for (let pass = 0; pass < 4; pass++) {
+      const shift = pass * 8;
+      counts.fill(0);
+      for (let i = 0; i < N; i++) counts[(keys0[i] >>> shift) & 0xff]++;
+      pfx[0] = 0;
+      for (let i = 1; i < 256; i++) pfx[i] = pfx[i-1] + counts[i-1];
+      for (let i = 0; i < N; i++) {
+        const b = (keys0[i] >>> shift) & 0xff;
+        keys1[pfx[b]]   = keys0[i];
+        idx1[pfx[b]++]  = idx0[i];
+      }
+      [keys0, keys1] = [keys1, keys0];
+      [idx0,  idx1 ] = [idx1,  idx0 ];
+    }
+    return idx0;
+  }
 
-    // ── Pass 1: sort by low byte ───────────────────────────────────────────
-    counts.fill(0);
-    for (let i = 0; i < N; i++) counts[keys0[i] & 0xff]++;
+  return sort;
+}
 
-    pfx[0] = 0;
-    for (let i = 1; i < 256; i++) pfx[i] = pfx[i - 1] + counts[i - 1];
+// ── Async worker sorter ───────────────────────────────────────────────────────
 
-    for (let i = 0; i < N; i++) {
-      const k   = keys0[i] & 0xff;
-      const pos = pfx[k]++;
-      keys1[pos] = keys0[i];
-      idx1[pos]  = idx0[i];
+function createSorter(maxN) {
+  if (typeof Worker === 'undefined') return createSyncSorter(maxN);
+
+  let worker;
+  try {
+    const blob = new Blob([WORKER_SRC], { type: 'application/javascript' });
+    const url  = URL.createObjectURL(blob);
+    worker = new Worker(url);
+    URL.revokeObjectURL(url);
+  } catch (_) {
+    return createSyncSorter(maxN);
+  }
+
+  // Identity order until first worker result arrives
+  let lastOrder = new Uint32Array(maxN);
+  for (let i = 0; i < maxN; i++) lastOrder[i] = i;
+
+  let busy   = false;
+  let queued = null;   // latest pending request while worker is busy
+
+  worker.onmessage = (e) => {
+    lastOrder = e.data.order;
+    busy = false;
+    if (queued) {
+      const { depths, N } = queued;
+      queued = null;
+      busy = true;
+      worker.postMessage({ depths, N }, [depths.buffer]);
+    }
+  };
+
+  return function sort(depths, N) {
+    const copy = new Float32Array(N);
+    copy.set(depths.subarray(0, N));
+
+    if (!busy) {
+      busy = true;
+      worker.postMessage({ depths: copy, N }, [copy.buffer]);
+    } else {
+      queued = { depths: copy, N };   // drop stale request, keep latest
     }
 
-    // ── Pass 2: sort by high byte (stable → preserves low-byte order) ─────
-    counts.fill(0);
-    for (let i = 0; i < N; i++) counts[(keys1[i] >> 8) & 0xff]++;
-
-    pfx[0] = 0;
-    for (let i = 1; i < 256; i++) pfx[i] = pfx[i - 1] + counts[i - 1];
-
-    for (let i = 0; i < N; i++) {
-      const k   = (keys1[i] >> 8) & 0xff;
-      const pos = pfx[k]++;
-      idx0[pos] = idx1[i];
-    }
-
-    return idx0; // ascending depth order = back-to-front
+    return lastOrder;
   };
 }
 
@@ -936,7 +1048,12 @@ async function decompressGzip(buffer) {
  *   ],
  *   "callouts" : [            // world-space points to project onto the screen
  *     { "id": "label", "pos": [x, y, z] }
- *   ]
+ *   ],
+ *   "markers" : {             // Blender timeline markers → frame numbers (0-based)
+ *     "intro"       : 0,      // used by scroll-scene data-from / data-to attributes
+ *     "desk_reveal" : 72,
+ *     "end"         : 119
+ *   }
  * }
  *
  * Coordinates are in viewer Y-up space. The Blender export script converts
@@ -955,8 +1072,18 @@ class Animation {
     this.fps        = data.fps        ?? 24;
     this.frameCount = data.frameCount ?? Math.floor(data.frames.length / 6);
     this.fov        = data.fov        ?? null;   // null = keep player fov
+    this.near       = data.near       ?? null;   // null = keep player near
+    this.far        = data.far        ?? null;   // null = keep player far
     this.callouts   = data.callouts   ?? [];
     this.loop       = true;
+
+    // Named timeline markers: { markerName: frameNumber }
+    // Accepts either object { name: frame } or array [{ name, frame }]
+    if (Array.isArray(data.markers)) {
+      this.markers = Object.fromEntries(data.markers.map(m => [m.name, m.frame]));
+    } else {
+      this.markers = data.markers ?? {};
+    }
 
     // Typed array: 6 floats per frame [ex ey ez fx fy fz]
     this._frames  = new Float32Array(data.frames);
@@ -978,6 +1105,16 @@ class Animation {
 
   seek(seconds) {
     this._time = Math.max(0, Math.min(this.duration, seconds));
+  }
+
+  /** Seek to an exact frame number (0-based). */
+  seekFrame(frame) {
+    this._time = Math.max(0, Math.min(this.frameCount - 1, frame)) / this.fps;
+  }
+
+  /** Current playback position as a frame number (may be fractional). */
+  get frame() {
+    return this._time * this.fps;
   }
 
   /**
@@ -1279,7 +1416,12 @@ class Renderer {
     if (!navigator.gpu) throw new Error('WebGPU is not supported in this browser.');
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error('No WebGPU adapter found.');
-    this.device = await adapter.requestDevice();
+    this.device = await adapter.requestDevice({
+      requiredLimits: {
+        maxStorageBufferBindingSize: adapter.limits.maxStorageBufferBindingSize,
+        maxBufferSize:               adapter.limits.maxBufferSize,
+      },
+    });
 
     this.context = this.canvas.getContext('webgpu');
     this._format = navigator.gpu.getPreferredCanvasFormat();
@@ -1319,7 +1461,7 @@ class Renderer {
 
   // ── Per-frame updates ──────────────────────────────────────────────────────
 
-  updateUniforms({ view, proj, width, height, focal }) {
+  updateUniforms({ view, proj, width, height, focal, near = 0.1 }) {
     const u = this._uniforms;
     u.set(view,   U_VIEW);
     u.set(proj,   U_PROJ);
@@ -1327,6 +1469,7 @@ class Renderer {
     u[U_VIEWPORT + 1] = height;
     u[U_FOCAL]        = focal;
     u[U_FOCAL + 1]    = focal;
+    u[U_PARAMS + 1]   = near;
     this.device.queue.writeBuffer(this._uniformBuf, 0, u);
   }
 
@@ -1471,6 +1614,7 @@ class Viewer {
       far        = 2000,
       splatScale = 1.0,
       autoRotate = false,
+      flipY      = false,
       onProgress,
       onError,
     } = options;
@@ -1480,6 +1624,7 @@ class Viewer {
     this._onError    = onError;
     this._autoRotate = autoRotate;
     this._splatScale = splatScale;
+    this._flipY      = flipY;
 
     this._renderer   = new Renderer(this._canvas, background);
     this._camera     = new OrbitCamera({ fov, near, far });
@@ -1517,6 +1662,8 @@ class Viewer {
     const { data, count } = await loader(url, p => {
       if (this._onProgress) this._onProgress(p);
     });
+
+    if (this._flipY) flipYInPlace(data, count);
 
     this._gaussians = data;
     this._numSplats = count;
@@ -1557,6 +1704,17 @@ class Viewer {
 
   setAutoRotate(v) { this._autoRotate = v; }
 
+  setFlipY(enabled) {
+    if (!!enabled === this._flipY) return;
+    this._flipY = !!enabled;
+    if (this._gaussians) {
+      flipYInPlace(this._gaussians, this._numSplats);
+      this._renderer.uploadGaussians(this._gaussians, this._numSplats);
+      this._camera.fitScene(this._gaussians, this._numSplats);
+    }
+  }
+
+
   /** Freeze / unfreeze animation playback. When paused, camera responds to user input. */
   setAnimationPaused(paused) { this._animPaused = paused; }
 
@@ -1567,9 +1725,9 @@ class Viewer {
   /** Attach a pre-loaded Animation instance. Pass null to detach. */
   setAnimation(anim) {
     this._animation = anim;
-    if (anim?.fov != null) {
-      this._camera.fov = anim.fov * Math.PI / 180;
-    }
+    if (anim?.fov  != null) this._camera.fov  = anim.fov  * Math.PI / 180;
+    if (anim?.near != null) this._camera.near = anim.near;
+    if (anim?.far  != null) this._camera.far  = anim.far;
   }
 
   /** Fetch, parse, and attach an animation from a URL. */
@@ -1632,8 +1790,10 @@ class Viewer {
     const w = this._canvas.width;
     const h = this._canvas.height;
 
-    if (this._animation && !this._animPaused) {
-      this._animation.tick(dt);
+    if (this._animation) {
+      // Always advance time when playing; when paused (e.g. scroll-driven) only
+      // skip the tick so that seekFrame() changes are still applied to the camera.
+      if (!this._animPaused) this._animation.tick(dt);
       const { eye, target } = this._animation.getCameraFrame();
       this._camera.setFromLookAt(eye, target);
     } else if (this._autoRotate) {
@@ -1660,7 +1820,7 @@ class Viewer {
     const order = this._sort(this._depths, this._numSplats);
 
     // Upload uniforms and order, then draw
-    this._renderer.updateUniforms({ view, proj, width: w, height: h, focal });
+    this._renderer.updateUniforms({ view, proj, width: w, height: h, focal, near: this._camera.near });
     this._renderer.updateOrder(order, this._numSplats);
     this._renderer.draw();
   }
@@ -1698,6 +1858,23 @@ class Viewer {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+function flipYInPlace(data, count) {
+  // Applies a 180° rotation around the X axis to every Gaussian in canonical layout.
+  // Converts Y-down scenes (OpenCV/COLMAP convention) to Y-up (OpenGL/HoloSplat convention).
+  // Position: (x, y, z) → (x, -y, -z)
+  // Quaternion pre-multiply by (1,0,0,0): (qx,qy,qz,qw) → (qw,-qz,qy,-qx)
+  for (let i = 0; i < count; i++) {
+    const d = i * 16;
+    data[d + 1] = -data[d + 1];
+    data[d + 2] = -data[d + 2];
+    const qx = data[d + 12], qy = data[d + 13], qz = data[d + 14], qw = data[d + 15];
+    data[d + 12] =  qw;
+    data[d + 13] = -qz;
+    data[d + 14] =  qy;
+    data[d + 15] = -qx;
+  }
+}
 
 function resolveCanvas(canvas) {
   if (!canvas) throw new Error('HoloSplat: canvas option is required');
@@ -1788,10 +1965,11 @@ const PLAYER_CSS = `
 .hs-player .hs-msg{font-size:.78rem;color:rgba(255,255,255,.45);text-align:center;max-width:260px;line-height:1.5;padding:0 16px;}
 .hs-player .hs-msg.hs-err{color:#f87;}
 .hs-player .hs-callouts{position:absolute;inset:0;pointer-events:none;}
-.hs-callout{position:absolute;pointer-events:auto;transform:translate(-50%,-50%);}
+.hs-lines{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none;}
+.hs-dot{fill:#3a7aff;stroke:#fff;stroke-width:2;}
+.hs-line{stroke:rgba(255,255,255,.55);stroke-width:1.5;}
+.hs-callout{position:absolute;pointer-events:auto;}
 .hs-callout--hidden{display:none;}
-.hs-callout::after{content:'';display:block;width:10px;height:10px;background:#3a7aff;border:2px solid #fff;border-radius:50%;box-shadow:0 1px 4px rgba(0,0,0,.5);}
-.hs-callout:not(:empty)::after{display:none;}
 `;
 
 let cssInjected = false;
@@ -1837,6 +2015,7 @@ function player(container, opts = {}) {
     far         = 2000,
     splatScale  = 1,
     autoRotate  = false,
+    flipY       = false,
     onLoad, onProgress, onError,
   } = opts;
 
@@ -1888,6 +2067,7 @@ function player(container, opts = {}) {
     fov, near, far,
     splatScale,
     autoRotate,
+    flipY,
     onProgress: p => {
       bar.style.width = `${(p * 100).toFixed(0)}%`;
       if (onProgress) onProgress(p);
@@ -1895,36 +2075,73 @@ function player(container, opts = {}) {
   });
 
   // ── Callout DOM ──────────────────────────────────────────────────────────────
-  // Map of id → HTMLElement, built when animation loads
+  // Map of id → { card, dot, line }
   const calloutDivs = {};
+  const NS = 'http://www.w3.org/2000/svg';
 
   function buildCallouts(callouts) {
-    // Remove old callout divs
     calloutEl.innerHTML = '';
     for (const key of Object.keys(calloutDivs)) delete calloutDivs[key];
+    if (!callouts.length) return;
+
+    // SVG overlay for dots and connector lines
+    const svg = document.createElementNS(NS, 'svg');
+    svg.setAttribute('class', 'hs-lines');
+    calloutEl.appendChild(svg);
 
     for (const c of callouts) {
-      const div = document.createElement('div');
-      div.className = 'hs-callout';
-      div.dataset.id = c.id;
-      calloutEl.appendChild(div);
-      calloutDivs[c.id] = div;
+      // Line drawn first (behind dot)
+      const line = document.createElementNS(NS, 'line');
+      line.setAttribute('class', 'hs-line');
+      svg.appendChild(line);
+
+      const dot = document.createElementNS(NS, 'circle');
+      dot.setAttribute('class', 'hs-dot');
+      dot.setAttribute('r', '5');
+      svg.appendChild(dot);
+
+      // Find user-authored card: look in root container first, then document-wide
+      let card = root.querySelector(`.hs-callout[data-id="${c.id}"]`)
+               ?? document.querySelector(`.hs-callout[data-id="${c.id}"]`);
+      if (card) {
+        calloutEl.appendChild(card); // move into overlay for absolute positioning
+      } else {
+        card = document.createElement('div');
+        card.className = 'hs-callout';
+        card.dataset.id = c.id;
+        calloutEl.appendChild(card);
+      }
+
+      calloutDivs[c.id] = { card, dot, line };
     }
   }
 
-  // Update callout positions each frame via viewer.onFrame
-  viewer.onFrame = (_view, _proj, _w, _h) => {
+  // Update positions each frame
+  viewer.onFrame = () => {
     if (!viewer._animation?.callouts.length) return;
     const projected = viewer.projectCallouts(viewer._animation.callouts);
     for (const { id, visible, x, y } of projected) {
-      const div = calloutDivs[id];
-      if (!div) continue;
+      const entry = calloutDivs[id];
+      if (!entry) continue;
+      const { card, dot, line } = entry;
       if (visible) {
-        div.classList.remove('hs-callout--hidden');
-        div.style.left = x + 'px';
-        div.style.top  = y + 'px';
+        const ox = parseFloat(card.dataset.offsetX ?? card.dataset.ox ?? 80);
+        const oy = parseFloat(card.dataset.offsetY ?? card.dataset.oy ?? -40);
+        const cx = x + ox, cy = y + oy;
+
+        dot.setAttribute('cx', x);   dot.setAttribute('cy', y);
+        line.setAttribute('x1', x);  line.setAttribute('y1', y);
+        line.setAttribute('x2', cx); line.setAttribute('y2', cy);
+        dot.style.display  = '';
+        line.style.display = '';
+
+        card.style.left = cx + 'px';
+        card.style.top  = cy + 'px';
+        card.classList.remove('hs-callout--hidden');
       } else {
-        div.classList.add('hs-callout--hidden');
+        dot.style.display  = 'none';
+        line.style.display = 'none';
+        card.classList.add('hs-callout--hidden');
       }
     }
   };
@@ -1953,7 +2170,8 @@ function player(container, opts = {}) {
       buildCallouts(anim.callouts);
       console.log(
         `[HoloSplat] animation loaded: ${anim.frameCount} frames @ ${anim.fps}fps, ` +
-        `${anim.callouts.length} callout(s):`, anim.callouts.map(c => c.id)
+        `${anim.callouts.length} callout(s):`, anim.callouts.map(c => c.id),
+        '| markers:', anim.markers
       );
       return anim;
     } catch (err) {
@@ -1992,9 +2210,10 @@ function player(container, opts = {}) {
     setBackground(bg)        { viewer.setBackground(bg); },
     setSplatScale(s)         { viewer.setSplatScale(s); },
     setAutoRotate(v)         { viewer.setAutoRotate(v); },
+    setFlipY(v)              { viewer.setFlipY(v); },
     setAnimationPaused(v)    { viewer.setAnimationPaused(v); },
     resetCamera()            { viewer.resetCamera(); },
-    callout(id)              { return calloutDivs[id] ?? null; },
+    callout(id)              { return calloutDivs[id]?.card ?? null; },
     get camera()             { return viewer.camera; },
     get animation()          { return viewer._animation; },
     get animationPaused()    { return viewer._animPaused; },
@@ -2017,6 +2236,486 @@ if (typeof document !== 'undefined') {
     document.addEventListener('DOMContentLoaded', autoInit);
   } else {
     autoInit();
+  }
+}
+
+// ── src/scroll-scene.js ────────────────────────────
+/**
+ * HoloSplat Scroll Scene — scroll-driven animation controller.
+ *
+ * Binds a HoloSplat player's animation playback to the scroll position of the
+ * page, using a declarative HTML structure of acts and holds.
+ *
+ * ── HTML structure ───────────────────────────────────────────────────────────
+ *
+ *   <div class="hs-scene">
+ *
+ *     <!-- Sticky canvas: stays in view while scrolling through the track -->
+ *     <div class="hs-stage">
+ *       <!-- player() targets this element -->
+ *     </div>
+ *
+ *     <!-- Scroll track: normal-flow divs that create scroll height.
+ *          Uses margin-top:-100vh to visually overlap the sticky stage. -->
+ *     <div class="hs-track">
+ *
+ *       <!-- Act: maps a Blender marker range to scroll distance.
+ *            The larger the height, the slower / more scroll needed to pass
+ *            through the frame range.
+ *
+ *            data-from  — start marker name OR frame number (default: 0)
+ *            data-to    — end   marker name OR frame number (default: last frame)
+ *            data-loop  — repeat the frame range N times as progress goes 0→1.
+ *                         "true" / "" = 1×, "3" = 3×.
+ *                         Reverse loops (data-from > data-to) are supported.
+ *       -->
+ *       <div class="hs-act"
+ *            data-from="intro"
+ *            data-to="desk_reveal"
+ *            style="height:300vh">
+ *
+ *         <!-- Caption: fades in at data-at progress (0..1) through this act.
+ *              data-at defaults to 0 (immediately visible). -->
+ *         <div class="hs-caption" data-at="0.3">Introducing the scene</div>
+ *
+ *       </div>
+ *
+ *       <!-- Hold: freeze at one frame while user scrolls past (reading time). -->
+ *       <div class="hs-hold"
+ *            data-frame="desk_reveal"
+ *            style="height:120vh">
+ *         <div class="hs-caption">Notice the details</div>
+ *       </div>
+ *
+ *       <!-- Reverse: data-from > data-to plays the range backwards. -->
+ *       <div class="hs-act"
+ *            data-from="desk_reveal"
+ *            data-to="intro"
+ *            style="height:200vh">
+ *       </div>
+ *
+ *       <!-- Loop 3×: plays intro→zoom three times as user scrolls through. -->
+ *       <div class="hs-act"
+ *            data-from="intro"
+ *            data-to="zoom"
+ *            data-loop="3"
+ *            style="height:300vh">
+ *       </div>
+ *
+ *     </div>
+ *   </div>
+ *
+ * ── JS usage ─────────────────────────────────────────────────────────────────
+ *
+ *   // Programmatic:
+ *   const p = HoloSplat.player('.hs-stage', { src: '...', animation: '...' });
+ *   HoloSplat.scrollScene(document.querySelector('.hs-scene'), p);
+ *
+ *   // Data-attribute auto-init (no JS needed):
+ *   // Place data-holosplat / data-holosplat-anim on the .hs-stage; the scroll
+ *   // scene is wired up automatically after the player initialises.
+ *
+ * ── Marker names ─────────────────────────────────────────────────────────────
+ *
+ *   data-from / data-to / data-frame accept either:
+ *     • A Blender timeline marker name exported in the animation JSON
+ *       (e.g. "intro", "desk_reveal"). Marker names are prefixed with
+ *       "data-marker-" automatically in Blender by adding them as
+ *       timeline markers named exactly as you want to reference them here.
+ *     • A bare frame number (e.g. "0", "72").
+ *
+ *   If a name is not found in the markers dict a warning is logged and 0 is used.
+ */
+
+// ── CSS (injected once per page) ─────────────────────────────────────────────
+
+const SCROLL_CSS = `
+.hs-scene {
+  position: relative;
+  width: 100%;
+}
+/* .hs-stage also carries .hs-player (position:relative) from player.js.
+   !important ensures sticky wins regardless of injection order.
+   100vw fills the full viewport regardless of parent padding/margin. */
+.hs-stage {
+  position: sticky !important;
+  top: 0;
+  left: 0;
+  width: 100vw !important;
+  height: 100vh !important;
+  z-index: 1;
+  overflow: hidden;
+}
+.hs-stage canvas {
+  position: absolute !important;
+  inset: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+.hs-track {
+  /* Overlap the sticky stage so acts start scrolling at the same time the
+     canvas appears — not after it. */
+  margin-top: -100vh;
+  position: relative;
+  /* Clicks pass through to the canvas; restore per-element as needed. */
+  pointer-events: none;
+  z-index: 2;
+}
+.hs-act,
+.hs-hold {
+  position: relative;
+}
+.hs-caption {
+  pointer-events: auto;
+}
+.hs-caption--hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+`;
+
+let sceneCssInjected = false;
+function injectScrollCss() {
+  if (sceneCssInjected || typeof document === 'undefined') return;
+  sceneCssInjected = true;
+  const s = document.createElement('style');
+  s.textContent = SCROLL_CSS;
+  document.head.appendChild(s);
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Resolve a marker name or raw frame string to a frame number.
+ * Falls back to 0 with a warning if the name is unknown.
+ */
+function resolveFrame(value, markers, fallback = 0) {
+  if (value === undefined || value === null || value === '') return fallback;
+  const str = String(value).trim();
+  if (Object.prototype.hasOwnProperty.call(markers, str)) return markers[str];
+  const n = parseFloat(str);
+  if (!isNaN(n)) return n;
+  console.warn(`[HoloSplat] scrollScene: unknown marker "${str}" — using ${fallback}`);
+  return fallback;
+}
+
+/**
+ * Parse a single act/hold element into a descriptor object.
+ * @param {HTMLElement} el
+ * @param {object}      markers  { name: frame }
+ * @param {number}      lastFrame  fallback for data-to when omitted
+ */
+function parseAct(el, markers, lastFrame) {
+  const isHold = el.classList.contains('hs-hold');
+
+  if (isHold) {
+    return {
+      el,
+      type: 'hold',
+      frame: resolveFrame(el.dataset.frame, markers, 0),
+      captions: parseCaptions(el),
+    };
+  }
+
+  const fromAttr   = el.dataset.from ?? '';
+  const isPingpong = fromAttr === 'pingpong-start';
+
+  const from = resolveFrame(fromAttr,        markers, 0);
+  const to   = resolveFrame(el.dataset.to,   markers, lastFrame);
+
+  // data-loop: number of times to cycle the frame range as progress 0→1.
+  // "true" / "" = 1 (seamless, one full cycle); "3" = 3 repetitions.
+  let loop = 0;
+  if (el.dataset.loop !== undefined) {
+    const v = el.dataset.loop.trim();
+    loop = (v === '' || v === 'true') ? 1 : (Math.max(1, parseFloat(v) || 1));
+  }
+
+  return {
+    el,
+    type: isPingpong ? 'pingpong' : 'act',
+    from,
+    to,
+    loop,
+    captions: parseCaptions(el),
+  };
+}
+
+function parseCaptions(el) {
+  return [...el.querySelectorAll('.hs-caption')].map(c => ({
+    el: c,
+    at: parseFloat(c.dataset.at ?? '0'),
+  }));
+}
+
+/**
+ * Compute the target frame for a given 0..1 progress through an act.
+ */
+function actFrame(act, progress) {
+  if (act.type === 'hold') return act.frame;
+  // Pingpong acts own their own playback; only commit to end-frame when
+  // fully scrolled past so the next act gets a clean starting point.
+  if (act.type === 'pingpong') return progress >= 1 ? act.to : act.from;
+
+  const { from, to, loop } = act;
+  const range = to - from;
+  if (range === 0) return from;
+
+  let p = progress;
+  if (loop > 0) {
+    // Tile the range `loop` times; modulo keeps it within one cycle.
+    p = (progress * loop) % 1;
+  }
+
+  return from + p * range;
+}
+
+/**
+ * Returns the scroll progress (0..1) of an element relative to the top of
+ * the viewport.  0 = element top is at viewport top;
+ *                1 = element bottom is at viewport top (fully scrolled past).
+ */
+function getProgress(el) {
+  const top = el.getBoundingClientRect().top;
+  const h   = el.offsetHeight || 1;
+  return Math.max(0, Math.min(1, -top / h));
+}
+
+// ── Pingpong transition helpers ───────────────────────────────────────────────
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function smoothstep(a, b, x) {
+  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+// ── scrollScene ───────────────────────────────────────────────────────────────
+
+/**
+ * Attach scroll-driven animation control to an .hs-scene element.
+ *
+ * @param {HTMLElement} sceneEl        The .hs-scene container element.
+ * @param {object}      playerInstance A HoloSplat player() return value.
+ * @returns {{ rebuild: function, destroy: function }}
+ */
+function scrollScene(sceneEl, playerInstance, opts = {}) {
+  injectScrollCss();
+
+  const track = sceneEl.querySelector('.hs-track');
+  if (!track) {
+    console.warn('[HoloSplat] scrollScene: .hs-track not found inside scene');
+    return { rebuild() {}, destroy() {} };
+  }
+
+  let acts = [];
+
+  // ── Pingpong playback ────────────────────────────────────────────────────────
+  // Autonomous time-driven pingpong between two frame bounds.
+  // Active while the user is scrolled into a pingpong act; stops automatically
+  // when they scroll out, handing control back to the scroll-seek path.
+
+  let ppBlend         = Math.max(0, Math.min(0.49, opts.pingpongBlend ?? 0.15));
+  let ppActive        = false;
+  let ppDir           = 1;
+  let ppFrame         = 0;
+  let ppStart         = 0;
+  let ppEnd           = 0;
+  let ppLastTime      = null;
+  let ppRafId         = null;
+  let ppBlendProgress = 0;  // updated each scroll tick; drives entry/exit blend
+
+  // fromEnd=true when entering from below (scrolling up): start at ppEnd, go backward.
+  function startPingpong(startFrame, endFrame, fromEnd = false) {
+    if (ppActive) return;
+    ppActive   = true;
+    ppStart    = startFrame;
+    ppEnd      = endFrame;
+    ppDir      = fromEnd ? -1 : 1;
+    ppFrame    = fromEnd ? endFrame : startFrame;
+    ppLastTime = null;
+    ppRafId    = requestAnimationFrame(tickPingpong);
+  }
+
+  function stopPingpong() {
+    ppActive = false;
+    if (ppRafId !== null) { cancelAnimationFrame(ppRafId); ppRafId = null; }
+  }
+
+  function tickPingpong(now) {
+    if (!ppActive) return;
+    ppRafId = requestAnimationFrame(tickPingpong);
+    if (ppLastTime === null) { ppLastTime = now; return; }
+
+    const dt  = (now - ppLastTime) / 1000;
+    ppLastTime = now;
+
+    const fps = playerInstance.animation?.fps ?? 24;
+    ppFrame  += ppDir * fps * dt;
+    if (ppFrame >= ppEnd)   { ppFrame = ppEnd;   ppDir = -1; }
+    if (ppFrame <= ppStart) { ppFrame = ppStart;  ppDir =  1; }
+
+    // Entry/exit blend: cross-fade between boundary frame and live pingpong frame
+    // so the camera never pops when the user scrolls into or out of this section.
+    // The blend is symmetric — the low-p zone handles entry from above and exit
+    // going up; the high-p zone handles exit going down and entry from below.
+    let frame = ppFrame;
+    const p   = ppBlendProgress;
+    if (p < ppBlend) {
+      frame = lerp(ppStart, ppFrame, smoothstep(0, ppBlend, p));
+    } else if (p > 1 - ppBlend) {
+      frame = lerp(ppFrame, ppEnd, smoothstep(1 - ppBlend, 1, p));
+    }
+
+    playerInstance.animation.seekFrame(frame);
+  }
+
+  // ── Act building ────────────────────────────────────────────────────────────
+
+  function buildActs() {
+    const anim      = playerInstance.animation;
+    const markers   = anim?.markers ?? {};
+    const lastFrame = anim ? anim.frameCount - 1 : 0;
+    acts = [...track.children].map(el => parseAct(el, markers, lastFrame));
+    // Hand playback control to scroll — stop the auto-play loop.
+    if (anim) playerInstance.setAnimationPaused(true);
+  }
+
+  // ── Scroll update ────────────────────────────────────────────────────────────
+
+  function update() {
+    if (!playerInstance.animation || !acts.length) return;
+
+    // Walk acts in order; find the one currently in progress.
+    // After a fully-scrolled act, keep its frame as the candidate so the last
+    // state holds until the next act starts.
+    let frame = actFrame(acts[0], 0);
+    let activeAct      = acts[0];
+    let activeProgress = 0;
+
+    for (const act of acts) {
+      const p = getProgress(act.el);
+      if (p <= 0) break;              // haven't reached this act yet
+
+      frame          = actFrame(act, p);
+      activeAct      = act;
+      activeProgress = p;
+
+      if (p < 1) break;              // this is the currently-active act
+      // p === 1: fully scrolled past — continue to check next act
+    }
+
+    // Pingpong acts own their own rAF loop — scroll only starts/stops it.
+    const inPingpong = activeAct.type === 'pingpong'
+      && activeProgress > 0 && activeProgress < 1;
+
+    if (inPingpong) {
+      ppBlendProgress = activeProgress;
+      if (!ppActive) {
+        // Entering from below (scrolling up) if we're already past halfway.
+        startPingpong(activeAct.from, activeAct.to, activeProgress > 0.5);
+      }
+    } else {
+      stopPingpong();
+      playerInstance.animation.seekFrame(frame);
+    }
+
+    // ── Debug: log on act change ────────────────────────────────────────────
+    const activeId = activeAct?.el?.id ?? '—';
+    if (update._activeId !== activeId) {
+      update._activeId = activeId;
+      const act = activeAct;
+      const range = act.type === 'hold'
+        ? `hold @ frame ${act.frame}`
+        : act.type === 'pingpong'
+          ? `pingpong [${act.from} ↔ ${act.to}]`
+          : `act [${act.from} → ${act.to}]`;
+      console.log(`[HoloSplat] active: ${activeId} (${range}) | current frame: ${frame.toFixed(1)}`);
+    }
+
+    // ── Caption visibility ──────────────────────────────────────────────────
+    // All acts: hide captions of acts we haven't reached or have left.
+    for (const act of acts) {
+      if (!act.captions.length) continue;
+      const isActive = act === activeAct;
+      for (const cap of act.captions) {
+        const visible = isActive && activeProgress >= cap.at;
+        cap.el.classList.toggle('hs-caption--hidden', !visible);
+      }
+    }
+  }
+
+  // ── Throttle with rAF ────────────────────────────────────────────────────────
+
+  let rafPending = false;
+  function onScroll() {
+    if (rafPending) return;
+    rafPending = true;
+    requestAnimationFrame(() => { rafPending = false; update(); });
+  }
+
+  // ── Init ─────────────────────────────────────────────────────────────────────
+
+  window.addEventListener('scroll', onScroll, { passive: true });
+
+  // Wait for the animation to load (it's fetched async after player init),
+  // then immediately pause auto-play and seek to the correct scroll position.
+  // Using rAF so we don't block and the check is cheap.
+  (function waitForAnim() {
+    if (!playerInstance.animation) { requestAnimationFrame(waitForAnim); return; }
+    // Disable orbit/wheel/touch controls so they don't swallow scroll events.
+    playerInstance.camera.enabled = false;
+    // Let the caller set data-from/to/frame attributes BEFORE we parse them.
+    if (opts.onReady) opts.onReady(playerInstance.animation);
+    buildActs();
+    update();
+  })();
+
+  // ── Public API ───────────────────────────────────────────────────────────────
+  return {
+    /**
+     * Re-read act elements from the DOM and re-resolve marker names.
+     * Call after programmatic DOM changes to .hs-track.
+     */
+    rebuild() { stopPingpong(); buildActs(); update(); },
+
+    get pingpongBlend()    { return ppBlend; },
+    setPingpongBlend(v)    { ppBlend = Math.max(0, Math.min(0.49, v)); },
+
+    destroy() {
+      stopPingpong();
+      window.removeEventListener('scroll', onScroll);
+      playerInstance.camera.enabled = true;
+      playerInstance.setAnimationPaused(false);
+    },
+  };
+}
+
+// ── Data-attribute auto-init ─────────────────────────────────────────────────
+//
+// Looks for .hs-scene elements that contain a .hs-stage with data-holosplat.
+// The player() auto-init in player.js handles creating the player on .hs-stage;
+// we wait for DOMContentLoaded (same event) and wire up scroll scenes after.
+
+function autoInitScrollScenes() {
+  document.querySelectorAll('.hs-scene').forEach(sceneEl => {
+    if (sceneEl._hsScroll) return;
+
+    const stage = sceneEl.querySelector('.hs-stage');
+    if (!stage) return;
+
+    // Ensure the stage has a player (created by player.js autoInit).
+    if (!stage._hsPlayer) return;
+
+    sceneEl._hsScroll = scrollScene(sceneEl, stage._hsPlayer);
+  });
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', autoInitScrollScenes);
+  } else {
+    autoInitScrollScenes();
   }
 }
 
@@ -2064,6 +2763,7 @@ if (typeof document !== 'undefined') {
 
 
 
+
 async function create(options = {}) {
   const { onLoad, onError, src, ...viewerOpts } = options;
 
@@ -2091,13 +2791,14 @@ async function create(options = {}) {
     setBackground(bg)   { viewer.setBackground(bg); },
     setSplatScale(s)    { viewer.setSplatScale(s); },
     setAutoRotate(v)    { viewer.setAutoRotate(v); },
+    setFlipY(v)         { viewer.setFlipY(v); },
     resetCamera()       { viewer.resetCamera(); },
     get camera()        { return viewer.camera; },
   };
 }
 
-// Also expose Viewer class, animation, parsers, and compression utilities
+// Also expose Viewer class, animation, scroll scene, parsers, and compression utilities
 
 
-  return { create, player, Viewer, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly };
+  return { create, player, scrollScene, Viewer, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly };
 })();

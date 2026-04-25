@@ -24,7 +24,7 @@ struct Uniforms {
   proj       : mat4x4<f32>,
   viewport   : vec2<f32>,
   focal      : vec2<f32>,
-  params     : vec4<f32>,  // .x = splatScale
+  params     : vec4<f32>,  // .x = splatScale  .y = near (view-space units)
 };
 
 struct Gaussian {
@@ -84,8 +84,14 @@ fn vs_main(
   let viewPos4 = uniforms.view * vec4<f32>(g.pos, 1.0);
   let t = viewPos4.xyz;
 
-  // Discard if behind near plane
-  if t.z > -0.1 { return degen(); }
+  // Discard if at or behind near plane
+  let near = uniforms.params.y;
+  if t.z > -near { return degen(); }
+
+  // Near-depth fade: fade out splats within 3× the near distance so that
+  // close-up splats don't cover the entire screen (matches Blender's behaviour).
+  let depth     = -t.z;
+  let nearFade  = clamp((depth - near) / (near * 2.0), 0.0, 1.0);
 
   // ── 3-D covariance ────────────────────────────────────────────────────────
   let splatScale = uniforms.params.x;
@@ -127,9 +133,15 @@ fn vs_main(
   let conic = vec3<f32>(c*inv, -b*inv, a*inv);
 
   // ── Bounding radius (3σ of largest eigenvalue) ────────────────────────────
-  let mid    = 0.5 * (a + c);
-  let disc   = sqrt(max(0.1, mid*mid - det));
-  let radius = ceil(3.0 * sqrt(mid + disc));
+  let mid      = 0.5 * (a + c);
+  let disc     = sqrt(max(0.1, mid*mid - det));
+  let rawRadius = ceil(3.0 * sqrt(mid + disc));
+
+  // Clamp screen-space radius: splats larger than half the viewport height
+  // are faded out and capped, preventing nearby splats from covering the screen.
+  let maxRadius = uniforms.viewport.y * 0.5;
+  let sizeFade  = clamp(maxRadius / max(rawRadius, 1.0), 0.0, 1.0);
+  let radius    = min(rawRadius, maxRadius);
 
   // ── Screen-space quad placement ───────────────────────────────────────────
   let clip    = uniforms.proj * viewPos4;
@@ -139,7 +151,7 @@ fn vs_main(
 
   var o: VOut;
   o.clipPos = vec4<f32>(ndcXY + ndcOff, clip.z / clip.w, 1.0);
-  o.color   = g.color;
+  o.color   = vec4<f32>(g.color.rgb, g.color.a * nearFade * sizeFade);
   o.uv      = pixOff;
   o.conic   = conic;
   return o;
