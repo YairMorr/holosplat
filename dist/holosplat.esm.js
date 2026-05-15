@@ -193,7 +193,8 @@ class OrbitCamera {
     this.target = [0, 0, 0];
 
     // Set to false to disable all input handling (e.g. when scroll-scene owns playback).
-    this.enabled = true;
+    this.enabled    = true;
+    this.panEnabled = true;
 
     this._drag    = null;      // { x, y, button }
     this._touches = [];
@@ -245,6 +246,7 @@ class OrbitCamera {
 
   _mouseDown(e) {
     if (!this.enabled) return;
+    if (e.button === 2 && !this.panEnabled) return;
     this._drag = { x: e.clientX, y: e.clientY, button: e.button };
     e.preventDefault();
   }
@@ -298,11 +300,13 @@ class OrbitCamera {
         this.radius = Math.max(0.01, this.radius * (prevDist / currDist));
       }
       // Two-finger pan (centroid delta)
-      const prevCx = (prev[0].x + prev[1].x) * 0.5;
-      const prevCy = (prev[0].y + prev[1].y) * 0.5;
-      const currCx = (curr[0].x + curr[1].x) * 0.5;
-      const currCy = (curr[0].y + curr[1].y) * 0.5;
-      this._pan(currCx - prevCx, currCy - prevCy);
+      if (this.panEnabled) {
+        const prevCx = (prev[0].x + prev[1].x) * 0.5;
+        const prevCy = (prev[0].y + prev[1].y) * 0.5;
+        const currCx = (curr[0].x + curr[1].x) * 0.5;
+        const currCy = (curr[0].y + curr[1].y) * 0.5;
+        this._pan(currCx - prevCx, currCy - prevCy);
+      }
     }
 
     this._touches = curr;
@@ -1636,6 +1640,7 @@ class Viewer {
 
     this._animation  = null;  // Animation instance, or null
     this._animPaused = false; // true → animation frozen, camera responds to user input
+    this._cameraFree = false; // true → animation does not override camera (freecamera mode)
     this._lastTick   = null;  // performance.now() of previous tick (for dt)
     this.onFrame     = null;  // callback(view, proj, width, height) — called each tick
   }
@@ -1715,7 +1720,25 @@ class Viewer {
   /** Freeze / unfreeze animation playback. When paused, camera responds to user input. */
   setAnimationPaused(paused) { this._animPaused = paused; }
 
+  /** When true, animation no longer overrides the camera — orbit/zoom controls take over. */
+  setCameraFree(v) { this._cameraFree = !!v; }
+
   resetCamera() { this._camera.fitScene(this._gaussians, this._numSplats); }
+
+  /** Replace scene data (rebuilds sorter + GPU buffers). fitCamera=true re-fits the orbit camera. */
+  setGaussians(data, count, fitCamera = false) {
+    this._gaussians = data;
+    this._numSplats = count;
+    this._depths    = new Float32Array(count);
+    this._sort      = createSorter(count);
+    this._renderer.uploadGaussians(data, count);
+    if (fitCamera) this._camera.fitScene(data, count);
+  }
+
+  /** Re-upload display data for the current frame without rebuilding the sorter (used for highlights). */
+  uploadDisplay(data) {
+    if (this._numSplats) this._renderer.uploadGaussians(data, this._numSplats);
+  }
 
   // ── Animation ──────────────────────────────────────────────────────────────
 
@@ -1788,11 +1811,11 @@ class Viewer {
     const h = this._canvas.height;
 
     if (this._animation) {
-      // Always advance time when playing; when paused (e.g. scroll-driven) only
-      // skip the tick so that seekFrame() changes are still applied to the camera.
       if (!this._animPaused) this._animation.tick(dt);
-      const { eye, target } = this._animation.getCameraFrame();
-      this._camera.setFromLookAt(eye, target);
+      if (!this._cameraFree) {
+        const { eye, target } = this._animation.getCameraFrame();
+        this._camera.setFromLookAt(eye, target);
+      }
     } else if (this._autoRotate) {
       this._camera.theta += 0.005;
     }
@@ -2209,6 +2232,7 @@ function player(container, opts = {}) {
     setAutoRotate(v)         { viewer.setAutoRotate(v); },
     setFlipY(v)              { viewer.setFlipY(v); },
     setAnimationPaused(v)    { viewer.setAnimationPaused(v); },
+    setCameraFree(v)         { viewer.setCameraFree(v); },
     resetCamera()            { viewer.resetCamera(); },
     callout(id)              { return calloutDivs[id]?.card ?? null; },
     get camera()             { return viewer.camera; },
@@ -2415,8 +2439,9 @@ function parseAct(el, markers, lastFrame) {
     };
   }
 
-  const fromAttr   = el.dataset.from ?? '';
-  const isPingpong = fromAttr === 'pingpong-start';
+  const fromAttr      = el.dataset.from ?? '';
+  const isPingpong    = fromAttr === 'pingpong-start';
+  const isFreecamera  = fromAttr === 'freecamera-start';
 
   const from = resolveFrame(fromAttr,        markers, 0);
   const to   = resolveFrame(el.dataset.to,   markers, lastFrame);
@@ -2431,7 +2456,7 @@ function parseAct(el, markers, lastFrame) {
 
   return {
     el,
-    type: isPingpong ? 'pingpong' : 'act',
+    type: isPingpong ? 'pingpong' : isFreecamera ? 'freecamera' : 'act',
     from,
     to,
     loop,
@@ -2451,9 +2476,8 @@ function parseCaptions(el) {
  */
 function actFrame(act, progress) {
   if (act.type === 'hold') return act.frame;
-  // Pingpong acts own their own playback; only commit to end-frame when
-  // fully scrolled past so the next act gets a clean starting point.
-  if (act.type === 'pingpong') return progress >= 1 ? act.to : act.from;
+  if (act.type === 'pingpong'   ) return progress >= 1 ? act.to : act.from;
+  if (act.type === 'freecamera' ) return progress >= 1 ? act.to : act.from;
 
   const { from, to, loop } = act;
   const range = to - from;
@@ -2512,19 +2536,27 @@ function scrollScene(sceneEl, playerInstance, opts = {}) {
   // Active while the user is scrolled into a pingpong act; stops automatically
   // when they scroll out, handing control back to the scroll-seek path.
 
-  let ppBlend         = Math.max(0, Math.min(0.49, opts.pingpongBlend ?? 0.15));
-  let ppActive        = false;
-  let ppDir           = 1;
-  let ppFrame         = 0;
-  let ppStart         = 0;
-  let ppEnd           = 0;
-  let ppLastTime      = null;
-  let ppRafId         = null;
-  let ppBlendProgress = 0;  // updated each scroll tick; drives entry/exit blend
+  let ppActive   = false;
+  let ppDir      = 1;
+  let ppFrame    = 0;
+  let ppStart    = 0;
+  let ppEnd      = 0;
+  let ppLastTime = null;
+  let ppRafId    = null;
+
+  // Exit transition: after leaving a pingpong zone, ease from the captured
+  // pingpong frame to the scroll-driven target over the first portion of the
+  // next act. PP_TRANSITION_ZONE is that fraction of the next act's scroll range.
+  const PP_TRANSITION_ZONE = opts.pingpongTransition ?? 0.25;
+  let ppTransitioning  = false;
+  let ppCapturedFrame  = 0;
+
+  let fcActive = false; // freecamera section currently active
 
   // fromEnd=true when entering from below (scrolling up): start at ppEnd, go backward.
   function startPingpong(startFrame, endFrame, fromEnd = false) {
     if (ppActive) return;
+    ppTransitioning = false;
     ppActive   = true;
     ppStart    = startFrame;
     ppEnd      = endFrame;
@@ -2552,19 +2584,7 @@ function scrollScene(sceneEl, playerInstance, opts = {}) {
     if (ppFrame >= ppEnd)   { ppFrame = ppEnd;   ppDir = -1; }
     if (ppFrame <= ppStart) { ppFrame = ppStart;  ppDir =  1; }
 
-    // Entry/exit blend: cross-fade between boundary frame and live pingpong frame
-    // so the camera never pops when the user scrolls into or out of this section.
-    // The blend is symmetric — the low-p zone handles entry from above and exit
-    // going up; the high-p zone handles exit going down and entry from below.
-    let frame = ppFrame;
-    const p   = ppBlendProgress;
-    if (p < ppBlend) {
-      frame = lerp(ppStart, ppFrame, smoothstep(0, ppBlend, p));
-    } else if (p > 1 - ppBlend) {
-      frame = lerp(ppFrame, ppEnd, smoothstep(1 - ppBlend, 1, p));
-    }
-
-    playerInstance.animation.seekFrame(frame);
+    playerInstance.animation.seekFrame(ppFrame);
   }
 
   // ── Act building ────────────────────────────────────────────────────────────
@@ -2602,19 +2622,44 @@ function scrollScene(sceneEl, playerInstance, opts = {}) {
       // p === 1: fully scrolled past — continue to check next act
     }
 
-    // Pingpong acts own their own rAF loop — scroll only starts/stops it.
-    const inPingpong = activeAct.type === 'pingpong'
-      && activeProgress > 0 && activeProgress < 1;
+    const inPingpong   = activeAct.type === 'pingpong'   && activeProgress > 0 && activeProgress < 1;
+    const inFreecamera = activeAct.type === 'freecamera' && activeProgress > 0 && activeProgress < 1;
 
+    // ── Pingpong ──────────────────────────────────────────────────────────────
     if (inPingpong) {
-      ppBlendProgress = activeProgress;
-      if (!ppActive) {
-        // Entering from below (scrolling up) if we're already past halfway.
-        startPingpong(activeAct.from, activeAct.to, activeProgress > 0.5);
+      ppTransitioning = false;
+      if (!ppActive) startPingpong(activeAct.from, activeAct.to, activeProgress > 0.5);
+    } else {
+      if (ppActive) { ppCapturedFrame = ppFrame; ppTransitioning = true; }
+      stopPingpong();
+    }
+
+    // ── Freecamera ────────────────────────────────────────────────────────────
+    if (inFreecamera) {
+      if (!fcActive) {
+        fcActive = true;
+        playerInstance.setCameraFree(true);
+        playerInstance.camera.enabled    = true;
+        playerInstance.camera.panEnabled = false;
       }
     } else {
-      stopPingpong();
-      playerInstance.animation.seekFrame(frame);
+      if (fcActive) {
+        fcActive = false;
+        playerInstance.setCameraFree(false);
+        playerInstance.camera.enabled    = false;
+        playerInstance.camera.panEnabled = true;
+      }
+    }
+
+    // ── Seek (skip when pingpong or freecamera own the camera) ────────────────
+    if (!inPingpong && !inFreecamera) {
+      if (ppTransitioning) {
+        const t = smoothstep(0, PP_TRANSITION_ZONE, activeProgress);
+        if (t >= 1) ppTransitioning = false;
+        playerInstance.animation.seekFrame(lerp(ppCapturedFrame, frame, t));
+      } else {
+        playerInstance.animation.seekFrame(frame);
+      }
     }
 
     // ── Debug: log on act change ────────────────────────────────────────────
@@ -2674,13 +2719,15 @@ function scrollScene(sceneEl, playerInstance, opts = {}) {
      * Re-read act elements from the DOM and re-resolve marker names.
      * Call after programmatic DOM changes to .hs-track.
      */
-    rebuild() { stopPingpong(); buildActs(); update(); },
-
-    get pingpongBlend()    { return ppBlend; },
-    setPingpongBlend(v)    { ppBlend = Math.max(0, Math.min(0.49, v)); },
+    rebuild() {
+      stopPingpong(); ppTransitioning = false;
+      if (fcActive) { fcActive = false; playerInstance.setCameraFree(false); playerInstance.camera.panEnabled = true; }
+      buildActs(); update();
+    },
 
     destroy() {
-      stopPingpong();
+      stopPingpong(); ppTransitioning = false;
+      if (fcActive) { fcActive = false; playerInstance.setCameraFree(false); playerInstance.camera.panEnabled = true; }
       window.removeEventListener('scroll', onScroll);
       playerInstance.camera.enabled = true;
       playerInstance.setAnimationPaused(false);

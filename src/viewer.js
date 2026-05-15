@@ -50,6 +50,7 @@ export class Viewer {
 
     this._animation  = null;  // Animation instance, or null
     this._animPaused = false; // true → animation frozen, camera responds to user input
+    this._cameraFree = false; // true → animation does not override camera (freecamera mode)
     this._lastTick   = null;  // performance.now() of previous tick (for dt)
     this.onFrame     = null;  // callback(view, proj, width, height) — called each tick
   }
@@ -129,7 +130,25 @@ export class Viewer {
   /** Freeze / unfreeze animation playback. When paused, camera responds to user input. */
   setAnimationPaused(paused) { this._animPaused = paused; }
 
+  /** When true, animation no longer overrides the camera — orbit/zoom controls take over. */
+  setCameraFree(v) { this._cameraFree = !!v; }
+
   resetCamera() { this._camera.fitScene(this._gaussians, this._numSplats); }
+
+  /** Replace scene data (rebuilds sorter + GPU buffers). fitCamera=true re-fits the orbit camera. */
+  setGaussians(data, count, fitCamera = false) {
+    this._gaussians = data;
+    this._numSplats = count;
+    this._depths    = new Float32Array(count);
+    this._sort      = createSorter(count);
+    this._renderer.uploadGaussians(data, count);
+    if (fitCamera) this._camera.fitScene(data, count);
+  }
+
+  /** Re-upload display data for the current frame without rebuilding the sorter (used for highlights). */
+  uploadDisplay(data) {
+    if (this._numSplats) this._renderer.uploadGaussians(data, this._numSplats);
+  }
 
   // ── Animation ──────────────────────────────────────────────────────────────
 
@@ -202,11 +221,11 @@ export class Viewer {
     const h = this._canvas.height;
 
     if (this._animation) {
-      // Always advance time when playing; when paused (e.g. scroll-driven) only
-      // skip the tick so that seekFrame() changes are still applied to the camera.
       if (!this._animPaused) this._animation.tick(dt);
-      const { eye, target } = this._animation.getCameraFrame();
-      this._camera.setFromLookAt(eye, target);
+      if (!this._cameraFree) {
+        const { eye, target } = this._animation.getCameraFrame();
+        this._camera.setFromLookAt(eye, target);
+      }
     } else if (this._autoRotate) {
       this._camera.theta += 0.005;
     }

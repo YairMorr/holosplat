@@ -1,15 +1,28 @@
 {
   "name": "holosplat",
-  "version": "0.2.0",
-  "description": "Lightweight WebGPU Gaussian Splat viewer library",
+  "version": "0.4.0",
+  "description": "WebGPU Gaussian Splat viewer with scroll-driven animation and art direction editor",
   "type": "module",
   "main": "dist/holosplat.esm.js",
+  "module": "dist/holosplat.esm.js",
+  "exports": {
+    ".": "./dist/holosplat.esm.js"
+  },
+  "bin": {
+    "holosplat": "./bin/holosplat.cjs"
+  },
+  "files": [
+    "dist/",
+    "holosplat/",
+    "bin/",
+    "server.py"
+  ],
   "scripts": {
     "build": "node build.js",
     "build:py": "python bundle.py",
     "dev": "node build.js --watch"
   },
   "devDependencies": {
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.24.2"
   }
 }

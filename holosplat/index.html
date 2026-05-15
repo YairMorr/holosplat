@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HoloSplat</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111; color: #eee;
+      font-family: system-ui, sans-serif;
+      height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+    }
+
+    /* ── Toolbar ── */
+    #toolbar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; background: #1a1a1a;
+      border-bottom: 1px solid #333; flex-shrink: 0;
+    }
+    #toolbar h1 { font-size: 0.9rem; font-weight: 700; white-space: nowrap; }
+    #title-dot  { color: #ff9a44; margin-left: 2px; display: none; }
+    #configPath {
+      width: 220px; background: #252525; border: 1px solid #3a3a3a; color: #eee;
+      padding: 3px 7px; border-radius: 3px; font-size: 0.75rem;
+    }
+    #status {
+      flex: 1; font-size: 0.72rem; color: #666;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #status.err { color: #ff5555; }
+    #api-badge {
+      font-size: 0.65rem; padding: 2px 6px; border-radius: 10px;
+      background: #1e2e1e; border: 1px solid #2a4a2a; color: #5a9a5a;
+      white-space: nowrap;
+    }
+    #api-badge.offline { background: #2e1e1e; border-color: #4a2a2a; color: #9a5a5a; }
+
+    .btn {
+      background: #2a2a2a; border: 1px solid #3a3a3a; color: #ccc;
+      padding: 4px 10px; border-radius: 3px; cursor: pointer; font-size: 0.78rem;
+      white-space: nowrap; flex-shrink: 0;
+    }
+    .btn:hover { background: #333; color: #fff; }
+    .btn.primary { background: #2d4a7a; border-color: #3a6aaa; color: #fff; }
+    .btn.primary:hover { background: #3a5a9a; }
+
+    /* ── Main ── */
+    #main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 340px; flex-shrink: 0;
+      background: #1a1a1a; border-right: 1px solid #333;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    .pane { border-bottom: 1px solid #222; flex-shrink: 0; }
+    .pane-title {
+      font-size: 0.67rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.07em; color: #555;
+      padding: 6px 10px 4px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .pane-title .dim { font-weight: 400; text-transform: none; letter-spacing: 0; color: #3a3a3a; }
+
+    /* Files pane */
+    #files-pane { padding: 6px 10px 8px; }
+    .file-row { display: flex; align-items: center; gap: 5px; margin-top: 5px; }
+    .file-lbl { font-size: 0.7rem; color: #555; width: 34px; flex-shrink: 0; }
+    .file-row input {
+      flex: 1; min-width: 0;
+      background: #1e1e1e; border: 1px solid #2e2e2e; color: #ccc;
+      padding: 3px 6px; border-radius: 3px; font-size: 0.73rem;
+    }
+    .file-row input:focus { border-color: #3a7aff; outline: none; }
+    .file-row .btn { padding: 3px 7px; font-size: 0.7rem; }
+
+    /* Markers pane */
+    #markers-pane { overflow-y: auto; max-height: 150px; }
+    #markers-pane .pane-title { position: sticky; top: 0; background: #1a1a1a; z-index: 1; }
+    .marker-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 3px 10px; cursor: pointer; font-size: 0.73rem;
+    }
+    .marker-row:hover { background: #1e1e1e; }
+    .marker-name { color: #aaa; }
+    .marker-frame { color: #444; font-variant-numeric: tabular-nums; font-size: 0.68rem; }
+    .empty { padding: 8px 10px; color: #3a3a3a; font-size: 0.73rem; font-style: italic; }
+
+    /* Timeline pane */
+    #timeline-pane { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    #timeline { flex: 1; overflow-y: auto; }
+    .add-row {
+      display: flex; gap: 4px; padding: 6px 10px;
+      flex-shrink: 0; border-top: 1px solid #1e1e1e; flex-wrap: wrap;
+    }
+    .add-row .btn { flex: 1; min-width: 56px; font-size: 0.68rem; padding: 3px 4px; text-align: center; }
+
+    /* Act rows */
+    .act-row {
+      display: flex; align-items: center; gap: 4px;
+      padding: 5px 8px; border-bottom: 1px solid #1a1a1a;
+    }
+    .act-row:hover { background: #1d1d1d; }
+    .act-row select {
+      background: #1e1e1e; border: 1px solid #2e2e2e; color: #bbb;
+      padding: 2px 3px; border-radius: 3px; font-size: 0.7rem; min-width: 0;
+    }
+    .act-row select:focus { border-color: #3a7aff; outline: none; }
+    .type-sel { width: 68px; flex-shrink: 0; }
+    .from-sel, .to-sel, .frame-sel { flex: 1; }
+    .arrow { color: #444; font-size: 0.75rem; flex-shrink: 0; }
+
+    /* Height drag field */
+    .h-field {
+      display: flex; align-items: center; gap: 1px; flex-shrink: 0;
+      background: #1e1e1e; border: 1px solid #2e2e2e; border-radius: 3px;
+      padding: 2px 5px; cursor: ew-resize; user-select: none; min-width: 50px;
+    }
+    .h-field:hover { border-color: #444; }
+    .h-val  { font-size: 0.73rem; color: #ccc; font-variant-numeric: tabular-nums; min-width: 26px; text-align: right; }
+    .h-unit { font-size: 0.62rem; color: #444; }
+
+    .del-btn {
+      background: none; border: none; color: #333; cursor: pointer;
+      font-size: 0.95rem; line-height: 1; padding: 0 2px; flex-shrink: 0;
+    }
+    .del-btn:hover { color: #ff5555; }
+
+    /* Type accent stripe */
+    .act-type--act        .type-sel { border-left: 2px solid #3a7aff; }
+    .act-type--hold       .type-sel { border-left: 2px solid #ffa040; }
+    .act-type--pingpong   .type-sel { border-left: 2px solid #40d080; }
+    .act-type--freecamera .type-sel { border-left: 2px solid #c060e0; }
+
+    /* ── Preview ── */
+    #preview { flex: 1; display: flex; flex-direction: column; background: #0a0a0a; overflow: hidden; }
+    #preview-mount { flex: 1; position: relative; overflow: hidden; }
+
+    /* Let the hs-player fill the mount */
+    #preview-mount > * { position: absolute !important; inset: 0 !important; width: 100% !important; height: 100% !important; }
+
+    #no-gpu {
+      display: none; position: absolute; inset: 0;
+      align-items: center; justify-content: center; flex-direction: column;
+      gap: 8px; background: #0a0a0a; color: #444; font-size: 0.85rem; text-align: center;
+    }
+    #no-gpu.show { display: flex; }
+
+    /* Scrubber */
+    #scrub-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 12px; background: #1a1a1a; border-top: 1px solid #222;
+      flex-shrink: 0;
+    }
+    #scrubber { flex: 1; accent-color: #3a7aff; cursor: pointer; }
+    #frame-lbl {
+      font-size: 0.7rem; color: #555; white-space: nowrap;
+      min-width: 110px; text-align: right; font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>HoloSplat<span id="title-dot">●</span></h1>
+  <input id="configPath" value="hs-config.json" spellcheck="false" title="Config file path (relative to project root)">
+  <button class="btn" onclick="loadConfig()">Load</button>
+  <span id="status">Connecting…</span>
+  <span id="api-badge" class="offline">API offline</span>
+  <button class="btn primary" id="saveBtn" onclick="handleSave()">Save</button>
+  <button class="btn" onclick="exportConfig()">Export</button>
+</div>
+
+<div id="main">
+  <div id="sidebar">
+
+    <div class="pane" id="files-pane">
+      <div class="pane-title">Files</div>
+      <div class="file-row">
+        <span class="file-lbl">Scene</span>
+        <input id="sceneInput" placeholder="scenes/scene.spz" list="scene-list" spellcheck="false">
+        <datalist id="scene-list"></datalist>
+        <button class="btn" onclick="reloadScene()" title="Reload scene">↺</button>
+      </div>
+      <div class="file-row">
+        <span class="file-lbl">Anim</span>
+        <input id="animInput" placeholder="blender/export.json" list="anim-list" spellcheck="false">
+        <datalist id="anim-list"></datalist>
+        <button class="btn" onclick="reloadAnim()" title="Reload animation">↺</button>
+      </div>
+    </div>
+
+    <div class="pane" id="markers-pane">
+      <div class="pane-title">Markers <span class="dim">(click to seek)</span></div>
+      <div id="markers-list"><div class="empty">Load an animation to see markers</div></div>
+    </div>
+
+    <div id="timeline-pane">
+      <div class="pane-title">
+        Timeline
+        <span class="dim" id="total-height">0vh total</span>
+      </div>
+      <div id="timeline"></div>
+      <div class="add-row">
+        <button class="btn" onclick="addAct('act')">+ Act</button>
+        <button class="btn" onclick="addAct('hold')">+ Hold</button>
+        <button class="btn" onclick="addAct('pingpong')">+ Pingpong</button>
+        <button class="btn" onclick="addAct('freecamera')">+ Freecam</button>
+      </div>
+    </div>
+
+  </div>
+
+  <div id="preview">
+    <div id="preview-mount">
+      <div id="no-gpu">
+        <div>WebGPU not available</div>
+        <small style="color:#333">Use Chrome 113+ or Edge 113+ on localhost / https://</small>
+      </div>
+    </div>
+    <div id="scrub-row">
+      <input type="range" id="scrubber" min="0" max="0" value="0" step="1"
+        oninput="seekFrame(+this.value)">
+      <span id="frame-lbl">no animation loaded</span>
+    </div>
+  </div>
+</div>
+
+<script src="../dist/holosplat.iife.js"></script>
+<script>
+// ── State ──────────────────────────────────────────────────────────────────────
+const S = {
+  apiAvailable: false,
+  config: { version: 1, scene: '', animation: '', acts: [] },
+  markers: {},       // { markerName: frameNumber }
+  frameCount: 0,
+  player: null,
+  dirty: false,
+  _seq: 1,
+};
+
+// ── DOM shorthand ──────────────────────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+function setStatus(msg, err = false) {
+  $('status').textContent  = msg;
+  $('status').className    = err ? 'err' : '';
+}
+
+function setDirty(v) {
+  S.dirty = v;
+  $('title-dot').style.display = v ? 'inline' : 'none';
+}
+
+function updateTotal() {
+  const t = S.config.acts.reduce((s, a) => s + (a.height || 0), 0);
+  $('total-height').textContent = `${t}vh total`;
+}
+
+function updateApiBadge() {
+  const b = $('api-badge');
+  if (S.apiAvailable) {
+    b.textContent = 'API online';
+    b.className   = '';
+    $('saveBtn').textContent = 'Save';
+    $('saveBtn').title = `Save to ${$('configPath').value}`;
+  } else {
+    b.textContent = 'API offline';
+    b.className   = 'offline';
+    $('saveBtn').textContent = 'Export';
+    $('saveBtn').title = 'Download hs-config.json (server not running)';
+  }
+}
+
+// ── API ────────────────────────────────────────────────────────────────────────
+async function apiCheck() {
+  try {
+    const r = await fetch('/hs-api/ls');
+    if (!r.ok) throw 0;
+    S.apiAvailable = true;
+    const { spz, json } = await r.json();
+    setDatalist('scene-list', spz);
+    setDatalist('anim-list',  json);
+  } catch {
+    S.apiAvailable = false;
+  }
+  updateApiBadge();
+}
+
+function setDatalist(id, items) {
+  $(id).innerHTML = (items || []).map(f => `<option value="${f}">`).join('');
+}
+
+async function apiRead(path) {
+  const r = await fetch(`/hs-api/file?path=${encodeURIComponent(path)}`);
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json();
+}
+
+async function apiWrite(path, data) {
+  const r = await fetch(`/hs-api/file?path=${encodeURIComponent(path)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data, null, 2),
+  });
+  if (!r.ok) throw new Error(`${r.status}`);
+}
+
+// ── Config ─────────────────────────────────────────────────────────────────────
+async function loadConfig() {
+  const path = $('configPath').value.trim() || 'hs-config.json';
+  setStatus('Loading config…');
+  try {
+    const cfg   = await apiRead(path);
+    S.config    = cfg;
+    S.config.acts = (cfg.acts || []).map(a => ({ ...a, id: a.id || `act-${S._seq++}` }));
+    $('sceneInput').value = cfg.scene     || '';
+    $('animInput').value  = cfg.animation || '';
+    renderTimeline();
+    setDirty(false);
+    setStatus(`Loaded: ${path}`);
+    if (cfg.scene)     await loadScene(cfg.scene);
+    if (cfg.animation) await loadAnim(cfg.animation);
+  } catch {
+    setStatus('No config found — starting fresh');
+    S.config = { version: 1, scene: '', animation: '', acts: [] };
+    renderTimeline();
+    setDirty(false);
+  }
+}
+
+async function handleSave() {
+  if (!S.apiAvailable) { exportConfig(); return; }
+  const path = $('configPath').value.trim() || 'hs-config.json';
+  setStatus('Saving…');
+  try {
+    await apiWrite(path, buildConfig());
+    setStatus(`Saved: ${path}`);
+    setDirty(false);
+  } catch (e) {
+    setStatus(`Save failed: ${e.message}`, true);
+  }
+}
+
+function exportConfig() {
+  const blob = new Blob([JSON.stringify(buildConfig(), null, 2)], { type: 'application/json' });
+  const a    = document.createElement('a');
+  a.href     = URL.createObjectURL(blob);
+  a.download = 'hs-config.json';
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  setStatus('Downloaded hs-config.json');
+}
+
+function buildConfig() {
+  return {
+    version:   1,
+    scene:     $('sceneInput').value.trim(),
+    animation: $('animInput').value.trim(),
+    acts: S.config.acts.map(({ id, type, from, to, frame, height }) => {
+      const a = { id, type, height };
+      if (type === 'hold') a.frame = frame || null;
+      else { a.from = from || null; a.to = to || null; }
+      return a;
+    }),
+  };
+}
+
+// ── Player ─────────────────────────────────────────────────────────────────────
+function toUrl(rel) {
+  if (!rel) return null;
+  return rel.startsWith('http') ? rel : '/' + rel.replace(/^\/+/, '');
+}
+
+async function ensurePlayer() {
+  if (S.player) return true;
+  if (!navigator.gpu) { $('no-gpu').classList.add('show'); return false; }
+  S.player = HoloSplat.player($('preview-mount'), {});
+  return true;
+}
+
+async function loadScene(rel) {
+  if (!rel) return;
+  if (!await ensurePlayer()) return;
+  const url = toUrl(rel);
+  setStatus('Loading scene…');
+  try {
+    await S.player.load(url);
+    setStatus('Scene ready');
+  } catch (e) {
+    setStatus(`Scene error: ${e.message}`, true);
+  }
+}
+
+async function loadAnim(rel) {
+  if (!rel) return;
+  if (!await ensurePlayer()) return;
+  const url = toUrl(rel);
+  setStatus('Loading animation…');
+  try {
+    const result = S.player.loadAnim(url);
+    if (result?.then) await result;
+    // Poll until animation instance is available (loadAnim may be fire-and-forget internally)
+    if (!S.player.animation) {
+      await new Promise((res, rej) => {
+        let n = 0;
+        const t = setInterval(() => {
+          if (S.player.animation)    { clearInterval(t); res(); }
+          else if (++n > 60)         { clearInterval(t); rej(new Error('timeout')); }
+        }, 100);
+      });
+    }
+    S.player.setAnimationPaused(true);
+    const anim    = S.player.animation;
+    S.markers     = anim.markers    || {};
+    S.frameCount  = anim.frameCount || 0;
+    $('scrubber').max   = Math.max(0, S.frameCount - 1);
+    $('scrubber').value = 0;
+    $('frame-lbl').textContent = `frame 0 / ${S.frameCount}`;
+    renderMarkers();
+    renderTimeline(); // re-render so marker selects are populated
+    setStatus(`${S.frameCount} frames · ${Object.keys(S.markers).length} markers`);
+  } catch (e) {
+    setStatus(`Animation error: ${e.message}`, true);
+  }
+}
+
+function reloadScene() { loadScene($('sceneInput').value.trim()); setDirty(true); }
+function reloadAnim()  { loadAnim($('animInput').value.trim());   setDirty(true); }
+
+// ── Scrubber ───────────────────────────────────────────────────────────────────
+function seekFrame(n) {
+  if (S.player?.animation) S.player.animation.seekFrame(n);
+  $('frame-lbl').textContent = `frame ${Math.round(n)} / ${S.frameCount}`;
+}
+
+// ── Markers ────────────────────────────────────────────────────────────────────
+function renderMarkers() {
+  const entries = Object.entries(S.markers).sort((a, b) => a[1] - b[1]);
+  $('markers-list').innerHTML = entries.length
+    ? entries.map(([n, f]) =>
+        `<div class="marker-row" onclick="seekFrame(${f})" title="frame ${f}">
+           <span class="marker-name">${n}</span>
+           <span class="marker-frame">${f}</span>
+         </div>`).join('')
+    : '<div class="empty">No markers found</div>';
+}
+
+// ── Timeline ───────────────────────────────────────────────────────────────────
+function markerOpts(selected, emptyLabel) {
+  const sorted = Object.entries(S.markers).sort((a, b) => a[1] - b[1]);
+  let html = `<option value="">${emptyLabel}</option>`;
+  // Show selected value even if not yet in loaded markers
+  if (selected && !S.markers[selected])
+    html += `<option value="${selected}" selected>${selected} (?)</option>`;
+  for (const [n, f] of sorted)
+    html += `<option value="${n}"${selected === n ? ' selected' : ''}>${n} (${f})</option>`;
+  return html;
+}
+
+function renderTimeline() {
+  $('timeline').innerHTML = '';
+  for (const act of S.config.acts)
+    $('timeline').appendChild(makeRow(act));
+  updateTotal();
+}
+
+function makeRow(act) {
+  const div   = document.createElement('div');
+  div.className   = `act-row act-type--${act.type}`;
+  div.dataset.id  = act.id;
+  const isHold    = act.type === 'hold';
+  const arrow     = act.type === 'pingpong' ? '↔' : '→';
+
+  div.innerHTML = `
+    <select class="type-sel" title="Type">
+      <option value="act"${act.type==='act'?' selected':''}>act</option>
+      <option value="hold"${act.type==='hold'?' selected':''}>hold</option>
+      <option value="pingpong"${act.type==='pingpong'?' selected':''}>↔ ping</option>
+      <option value="freecamera"${act.type==='freecamera'?' selected':''}>⊕ free</option>
+    </select>
+    ${isHold
+      ? `<select class="frame-sel" title="Freeze at frame">
+           ${markerOpts(act.frame, '— frame —')}
+         </select>`
+      : `<select class="from-sel" title="Start marker">
+           ${markerOpts(act.from, '— start —')}
+         </select>
+         <span class="arrow">${arrow}</span>
+         <select class="to-sel" title="End marker">
+           ${markerOpts(act.to, '— end —')}
+         </select>`
+    }
+    <div class="h-field" title="Drag to change height (vh) · Shift = slow">
+      <span class="h-val">${act.height}</span><span class="h-unit">vh</span>
+    </div>
+    <button class="del-btn" title="Remove">×</button>
+  `;
+
+  div.querySelector('.type-sel').addEventListener('change', e => changeType(act.id, e.target.value));
+  if (isHold) {
+    div.querySelector('.frame-sel').addEventListener('change', e => setField(act.id, 'frame', e.target.value));
+  } else {
+    div.querySelector('.from-sel').addEventListener('change', e => setField(act.id, 'from', e.target.value));
+    div.querySelector('.to-sel').addEventListener('change',   e => setField(act.id, 'to',   e.target.value));
+  }
+  div.querySelector('.del-btn').addEventListener('click', () => removeAct(act.id));
+  bindHeightDrag(div.querySelector('.h-field'), act.id);
+
+  return div;
+}
+
+// ── Act CRUD ───────────────────────────────────────────────────────────────────
+function addAct(type) {
+  const id  = `act-${S._seq++}`;
+  const act = { id, type, height: 150 };
+  if (type === 'hold') {
+    act.frame = null;
+  } else {
+    act.from = type === 'pingpong'   ? (S.markers['pingpong-start']   != null ? 'pingpong-start'   : null)
+             : type === 'freecamera' ? (S.markers['freecamera-start'] != null ? 'freecamera-start' : null)
+             : null;
+    act.to   = type === 'pingpong'   ? (S.markers['pingpong-end']     != null ? 'pingpong-end'     : null)
+             : type === 'freecamera' ? (S.markers['freecamera-end']   != null ? 'freecamera-end'   : null)
+             : null;
+  }
+  S.config.acts.push(act);
+  $('timeline').appendChild(makeRow(act));
+  updateTotal();
+  setDirty(true);
+}
+
+function removeAct(id) {
+  S.config.acts = S.config.acts.filter(a => a.id !== id);
+  document.querySelector(`.act-row[data-id="${id}"]`)?.remove();
+  updateTotal();
+  setDirty(true);
+}
+
+function changeType(id, type) {
+  const act = S.config.acts.find(a => a.id === id);
+  if (!act) return;
+  const prev = act.type;
+  act.type   = type;
+
+  if (type === 'hold') {
+    act.frame = act.from || null;
+    delete act.from; delete act.to;
+  } else {
+    if (prev === 'hold') { act.from = act.frame || null; delete act.frame; }
+    act.to = act.to ?? null;
+    if (type === 'pingpong') {
+      if (S.markers['pingpong-start'] != null) act.from = 'pingpong-start';
+      if (S.markers['pingpong-end']   != null) act.to   = 'pingpong-end';
+    } else if (type === 'freecamera') {
+      if (S.markers['freecamera-start'] != null) act.from = 'freecamera-start';
+      if (S.markers['freecamera-end']   != null) act.to   = 'freecamera-end';
+    }
+  }
+
+  const row = document.querySelector(`.act-row[data-id="${id}"]`);
+  if (row) row.replaceWith(makeRow(act));
+  setDirty(true);
+}
+
+function setField(id, field, value) {
+  const act = S.config.acts.find(a => a.id === id);
+  if (act) { act[field] = value || null; setDirty(true); }
+}
+
+// ── Height drag ────────────────────────────────────────────────────────────────
+let _hd = null;
+
+function bindHeightDrag(el, id) {
+  el.addEventListener('mousedown', e => {
+    e.preventDefault();
+    const act = S.config.acts.find(a => a.id === id);
+    if (!act) return;
+    _hd = { id, x0: e.clientX, h0: act.height, valEl: el.querySelector('.h-val') };
+  });
+}
+
+document.addEventListener('mousemove', e => {
+  if (!_hd) return;
+  const act = S.config.acts.find(a => a.id === _hd.id);
+  if (!act) return;
+  const spd  = e.shiftKey ? 0.3 : 2;
+  act.height = Math.max(10, Math.round(_hd.h0 + (e.clientX - _hd.x0) * spd));
+  _hd.valEl.textContent = act.height;
+  updateTotal();
+  setDirty(true);
+});
+
+document.addEventListener('mouseup', () => { _hd = null; });
+
+// ── Keyboard shortcut ──────────────────────────────────────────────────────────
+document.addEventListener('keydown', e => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); handleSave(); }
+});
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+(async () => {
+  await apiCheck();
+  if (S.apiAvailable) {
+    await loadConfig();
+  } else {
+    setStatus('Server not running — open a config with Load or start fresh');
+    renderTimeline();
+  }
+})();
+</script>
+</body>
+</html>

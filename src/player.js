@@ -324,6 +324,7 @@ export function player(container, opts = {}) {
     setAutoRotate(v)         { viewer.setAutoRotate(v); },
     setFlipY(v)              { viewer.setFlipY(v); },
     setAnimationPaused(v)    { viewer.setAnimationPaused(v); },
+    setCameraFree(v)         { viewer.setCameraFree(v); },
     resetCamera()            { viewer.resetCamera(); },
     callout(id)              { return calloutDivs[id]?.card ?? null; },
     get camera()             { return viewer.camera; },

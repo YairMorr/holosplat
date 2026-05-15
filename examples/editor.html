@@ -1,0 +1,1205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HoloSplat Editor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111; color: #eee;
+      font-family: system-ui, sans-serif;
+      height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+    }
+
+    /* ── Toolbar ── */
+    #toolbar {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px; background: #1a1a1a;
+      border-bottom: 1px solid #333; flex-shrink: 0; flex-wrap: wrap;
+    }
+    #toolbar h1 { font-size: 0.95rem; font-weight: 700; white-space: nowrap; }
+    #urlInput {
+      flex: 1; min-width: 200px;
+      background: #2a2a2a; border: 1px solid #444; color: #eee;
+      padding: 4px 8px; border-radius: 4px; font-size: 0.8rem;
+    }
+    #status { font-size: 0.75rem; color: #888; white-space: nowrap; }
+    #status.err { color: #ff5555; font-weight: 600; }
+    #countEl { font-size: 0.75rem; color: #aaa; white-space: nowrap; margin-left: auto; }
+
+    /* ── Main ── */
+    #main { display: flex; flex: 1; overflow: hidden; }
+
+    /* ── Sidebar ── */
+    #sidebar {
+      width: 210px; flex-shrink: 0;
+      background: #1a1a1a; border-right: 1px solid #333;
+      display: flex; flex-direction: column; overflow-y: auto;
+    }
+    .mode-tabs {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: 1px; background: #111; border-bottom: 1px solid #333;
+    }
+    .mode-tab {
+      background: #1e1e1e; border: none; color: #888;
+      font-size: 0.75rem; padding: 7px 4px; cursor: pointer;
+    }
+    .mode-tab:hover { background: #2a2a2a; color: #ccc; }
+    .mode-tab.active { background: #2d4a7a; color: #fff; }
+
+    .panel { padding: 10px; display: none; flex-direction: column; gap: 8px; }
+    .panel.active { display: flex; }
+    .panel-title {
+      font-size: 0.7rem; font-weight: 700; text-transform: uppercase;
+      letter-spacing: 0.05em; color: #666;
+      border-bottom: 1px solid #2a2a2a; padding-bottom: 5px;
+    }
+    label.row { display: flex; align-items: center; gap: 6px; font-size: 0.78rem; color: #bbb; }
+    label.row > span.lbl { width: 28px; color: #888; font-size: 0.72rem; text-align: right; }
+    input[type="range"] { flex: 1; accent-color: #3a7aff; }
+    input[type="number"] {
+      width: 68px; background: #252525; border: 1px solid #3a3a3a;
+      color: #eee; padding: 3px 5px; border-radius: 3px; font-size: 0.78rem;
+    }
+    input[type="color"] { width: 32px; height: 20px; border: none; padding: 0; cursor: pointer; }
+    input[type="checkbox"] { accent-color: #3a7aff; }
+    .val { font-size: 0.72rem; color: #888; width: 34px; text-align: right; }
+    .hint {
+      font-size: 0.7rem; color: #666; line-height: 1.5;
+      background: #1e1e1e; border-radius: 4px; padding: 6px 8px;
+    }
+    .sub-title { font-size: 0.7rem; color: #666; margin-top: 2px; }
+    .crop-slider-row { display: flex; align-items: center; gap: 4px; margin-bottom: 2px; }
+    .crop-lbl { font-size: 0.68rem; color: #666; width: 20px; flex-shrink: 0; }
+    .crop-slider { flex: 1; accent-color: #3a7aff; }
+    .crop-val { font-size: 0.68rem; color: #888; width: 42px; text-align: right; flex-shrink: 0; }
+
+    /* ── Buttons ── */
+    .btn {
+      background: #2a2a2a; border: 1px solid #3a3a3a; color: #ccc;
+      padding: 5px 10px; border-radius: 4px; cursor: pointer;
+      font-size: 0.78rem; text-align: center;
+    }
+    .btn:hover:not(:disabled) { background: #333; color: #fff; }
+    .btn:disabled { opacity: 0.35; cursor: default; }
+    .btn.primary { background: #2d4a7a; border-color: #3a6aaa; color: #fff; }
+    .btn.primary:hover:not(:disabled) { background: #3a5a9a; }
+    .btn.danger  { background: #6a2020; border-color: #8a3030; color: #faa; }
+    .btn.danger:hover:not(:disabled)  { background: #7a2828; }
+    .btn.warn    { background: #5a4000; border-color: #7a5800; color: #fca; }
+    .btn.warn:hover:not(:disabled)    { background: #6a4a00; }
+    .btn-col { display: flex; flex-direction: column; gap: 4px; }
+    .btn-row { display: flex; gap: 4px; }
+    .btn-row .btn { flex: 1; }
+
+    /* ── Export / undo area ── */
+    #export-area {
+      margin-top: auto; border-top: 1px solid #2a2a2a;
+      padding: 10px; display: flex; flex-direction: column; gap: 6px;
+    }
+
+    /* ── Canvas wrap ── */
+    #canvasWrap { flex: 1; position: relative; overflow: hidden; }
+    canvas#viewer { width: 100%; height: 100%; display: block; }
+    #paintOverlay {
+      position: absolute; inset: 0; pointer-events: none;
+    }
+    #brushCursor {
+      display: none; position: absolute;
+      border: 2px solid rgba(255,255,255,0.8); border-radius: 50%;
+      pointer-events: none; transform: translate(-50%,-50%);
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.5);
+    }
+
+    /* ── Blender-style number fields ── */
+    .bnum {
+      position: relative; background: #222; border: 1px solid #3a3a3a;
+      border-radius: 3px; padding: 4px 8px; cursor: ew-resize;
+      font-size: 0.78rem; color: #eee; user-select: none;
+      display: flex; align-items: center; gap: 6px; overflow: hidden;
+    }
+    .bnum:hover { border-color: #555; }
+    .bnum-fill {
+      position: absolute; top: 0; bottom: 0;
+      background: rgba(58,122,255,0.2); pointer-events: none;
+    }
+    .bnum-label { color: #666; font-size: 0.7rem; position: relative; flex-shrink: 0; width: 14px; }
+    .bnum-num   { flex: 1; text-align: right; position: relative; font-variant-numeric: tabular-nums; }
+    .bnum > input {
+      position: absolute; inset: 0; background: #1a2535;
+      border: 1px solid #3a7aff; color: #fff; padding: 3px 8px;
+      font-size: 0.78rem; outline: none;
+    }
+
+    /* ── Grid + gizmo overlays ── */
+    #gridCanvas {
+      position: absolute; inset: 0; width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    #gizmoCanvas {
+      position: absolute; top: 12px; right: 12px;
+      width: 90px; height: 90px;
+      border-radius: 50%;
+      cursor: default;
+    }
+
+    /* ── Overlay ── */
+    #overlay {
+      position: absolute; inset: 0; pointer-events: none;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px;
+    }
+    #message { font-size: 0.9rem; color: #555; text-align: center; max-width: 360px; line-height: 1.5; }
+    #message.err { color: #ff7070; }
+    #progress { width: 200px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; display: none; }
+    #progressBar { height: 100%; background: #3a7aff; width: 0%; transition: width 0.1s; }
+    #gpuError {
+      position: absolute; inset: 0; display: none;
+      align-items: center; justify-content: center; background: #111;
+      flex-direction: column; gap: 12px; padding: 32px; text-align: center;
+    }
+    #gpuError h2 { color: #ff7070; }
+    #gpuError p  { color: #888; font-size: 0.85rem; line-height: 1.6; max-width: 400px; }
+  </style>
+</head>
+<body>
+
+<div id="toolbar">
+  <h1>HoloSplat Editor</h1>
+  <input id="urlInput" type="url" placeholder="http://localhost:8080/scenes/file.ply  (.ply / .splat / .spz)">
+  <button class="btn primary" id="loadBtn">Load</button>
+  <label class="row"><input id="flipY" type="checkbox"> Flip&nbsp;Y</label>
+  <span id="status">Ready</span>
+  <span id="countEl"></span>
+</div>
+
+<div id="main">
+  <div id="sidebar">
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="view">View</button>
+      <button class="mode-tab" data-mode="crop">Crop</button>
+      <button class="mode-tab" data-mode="paint">Paint</button>
+      <button class="mode-tab" data-mode="transform">Transform</button>
+    </div>
+    <div style="padding:5px 8px;border-bottom:1px solid #222;">
+      <button class="btn warn" id="undoBtn" disabled style="width:100%;padding:4px;">↩ Undo</button>
+    </div>
+
+    <!-- View -->
+    <div class="panel active" id="panel-view">
+      <div class="panel-title">Render</div>
+      <label class="row"><input id="showGrid" type="checkbox" checked> Grid</label>
+      <label class="row">BG <input id="bgColor" type="color" value="#000000"></label>
+      <label class="row">
+        Scale <input id="splatScale" type="range" min="0.1" max="3" step="0.05" value="1">
+        <span class="val" id="scaleVal">1.00</span>
+      </label>
+      <label class="row"><input id="autoRotate" type="checkbox"> Auto-rotate</label>
+      <button class="btn" id="resetBtn" disabled>Reset Camera</button>
+    </div>
+
+    <!-- Crop -->
+    <div class="panel" id="panel-crop">
+      <div class="panel-title">Crop Bounds</div>
+      <div class="hint">Drag sliders to hide points in real time. Release to permanently remove them.</div>
+      <div class="sub-title" style="margin-top:2px;">X axis</div>
+      <div class="crop-slider-row"><span class="crop-lbl">min</span><input type="range" id="cx0" class="crop-slider"><span class="crop-val" id="cx0v"></span></div>
+      <div class="crop-slider-row"><span class="crop-lbl">max</span><input type="range" id="cx1" class="crop-slider"><span class="crop-val" id="cx1v"></span></div>
+      <div class="sub-title">Y axis</div>
+      <div class="crop-slider-row"><span class="crop-lbl">min</span><input type="range" id="cy0" class="crop-slider"><span class="crop-val" id="cy0v"></span></div>
+      <div class="crop-slider-row"><span class="crop-lbl">max</span><input type="range" id="cy1" class="crop-slider"><span class="crop-val" id="cy1v"></span></div>
+      <div class="sub-title">Z axis</div>
+      <div class="crop-slider-row"><span class="crop-lbl">min</span><input type="range" id="cz0" class="crop-slider"><span class="crop-val" id="cz0v"></span></div>
+      <div class="crop-slider-row"><span class="crop-lbl">max</span><input type="range" id="cz1" class="crop-slider"><span class="crop-val" id="cz1v"></span></div>
+      <div id="cropCount" style="font-size:0.72rem;color:#aaa;min-height:1.2em;"></div>
+      <button class="btn" id="resetBounds">Reset to Data Bounds</button>
+    </div>
+
+    <!-- Paint -->
+    <div class="panel" id="panel-paint">
+      <div class="panel-title">Paint Select</div>
+      <label class="row">
+        Brush <input id="brushSize" type="range" min="5" max="250" step="1" value="40">
+        <span class="val" id="brushVal">40px</span>
+      </label>
+      <div class="hint">
+        <b>Drag</b> · <b>Shift+drag</b> — add to selection<br>
+        <b>Ctrl+drag</b> — remove from selection
+      </div>
+      <div id="selCount" style="font-size:0.72rem;color:#aaa;min-height:1.2em;">No selection</div>
+      <div class="btn-col">
+        <div class="btn-row">
+          <button class="btn" id="selAll">All</button>
+          <button class="btn" id="selNone">None</button>
+          <button class="btn" id="selInvert">Invert</button>
+        </div>
+        <button class="btn danger" id="deleteSelected" disabled>Delete Selected</button>
+      </div>
+    </div>
+
+    <!-- Transform -->
+    <div class="panel" id="panel-transform">
+      <div class="panel-title">Transform Model</div>
+      <div class="hint">Drag to change · Shift = slow · Ctrl = fast · Click to type<br>Changes commit on release.</div>
+      <div class="sub-title">Translate</div>
+      <div class="bnum" id="tx" data-label="X" data-step="0.01"  data-fill="0.05"  data-dec="3"></div>
+      <div class="bnum" id="ty" data-label="Y" data-step="0.01"  data-fill="0.05"  data-dec="3"></div>
+      <div class="bnum" id="tz" data-label="Z" data-step="0.01"  data-fill="0.05"  data-dec="3"></div>
+      <div class="sub-title">Rotate (°)</div>
+      <div class="bnum" id="rx" data-label="X" data-step="0.5"   data-fill="0.005" data-dec="2"></div>
+      <div class="bnum" id="ry" data-label="Y" data-step="0.5"   data-fill="0.005" data-dec="2"></div>
+      <div class="bnum" id="rz" data-label="Z" data-step="0.5"   data-fill="0.005" data-dec="2"></div>
+      <div class="sub-title">Scale (uniform)</div>
+      <div class="bnum" id="ts" data-label="S" data-step="0.005" data-fill="2.0"   data-dec="3" data-default="1"></div>
+      <button class="btn primary" id="applyXformBtn" disabled style="margin-top:4px;">Apply Transforms</button>
+    </div>
+
+    <!-- Export -->
+    <div id="export-area">
+      <div class="panel-title">Export</div>
+      <div class="btn-col">
+        <button class="btn" id="exportPly"  disabled>Export PLY</button>
+        <button class="btn" id="exportSpz"  disabled>Export SPZ</button>
+        <button class="btn" id="exportBoth" disabled>Export Both</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="viewer"></canvas>
+    <canvas id="gridCanvas"></canvas>
+    <canvas id="gizmoCanvas"></canvas>
+    <div id="paintOverlay">
+      <div id="brushCursor"></div>
+    </div>
+    <div id="overlay">
+      <div id="message">Load a scene to begin editing.<br>
+        <small style="color:#444">Serve with: <code style="color:#666">python server.py</code></small>
+      </div>
+      <div id="progress"><div id="progressBar"></div></div>
+    </div>
+    <div id="gpuError">
+      <h2>WebGPU not available</h2>
+      <p>HoloSplat requires WebGPU. Try Chrome 113+ or Edge 113+.<br>
+        On Chrome, use <code>http://localhost</code> or <code>https://</code>.</p>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import { Viewer, compressToSpz } from '../dist/holosplat.esm.js';
+
+// ── GPU check ────────────────────────────────────────────────────────────────
+if (!navigator.gpu) {
+  document.getElementById('gpuError').style.display = 'flex';
+  document.getElementById('loadBtn').disabled = true;
+}
+
+// ── Refs ─────────────────────────────────────────────────────────────────────
+const urlInput    = document.getElementById('urlInput');
+const statusEl    = document.getElementById('status');
+const countEl     = document.getElementById('countEl');
+const messageEl   = document.getElementById('message');
+const progressEl  = document.getElementById('progress');
+const progressBar = document.getElementById('progressBar');
+const canvas      = document.getElementById('viewer');
+const paintOverlay= document.getElementById('paintOverlay');
+const brushCursor = document.getElementById('brushCursor');
+const brushSizeIn = document.getElementById('brushSize');
+
+// ── State ────────────────────────────────────────────────────────────────────
+let viewer          = null;
+let srcData         = null;   // Float32Array — source of truth (canonical positions/colors)
+let numSplats       = 0;
+let selectedMask    = null;   // Uint8Array — 1 = selected
+let displayData     = null;   // Float32Array — GPU copy with highlights
+let undoStack       = [];
+let loadedWithFlipY = false;  // was flipY applied at load time? needed to round-trip PLY correctly
+
+let mode         = 'view';
+let currentView  = null;
+let currentProj  = null;
+let canvasW      = 0, canvasH = 0;
+
+// ── Mode tabs ─────────────────────────────────────────────────────────────────
+document.querySelectorAll('.mode-tab').forEach(t =>
+  t.addEventListener('click', () => setMode(t.dataset.mode)));
+
+function setMode(m) {
+  if (m === mode) return;
+  // Exit cleanup
+  if (mode === 'paint') exitPaint();
+  if (mode === 'crop' && srcData) {
+    displayData.set(srcData);
+    viewer?.uploadDisplay(displayData);
+    document.getElementById('cropCount').textContent = '';
+  }
+  if (mode === 'transform') commitXform();
+  mode = m;
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === m));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === `panel-${m}`));
+  // Enter setup
+  if (m === 'paint' && srcData) { enterPaint(); refreshDisplay(); }
+  if (m === 'crop'  && srcData) applyCropPreview();
+}
+
+// ── Status helpers ────────────────────────────────────────────────────────────
+const setStatus  = (t, e=false) => { statusEl.textContent = t; statusEl.className = e ? 'err' : ''; };
+const setMessage = (t, e=false) => { messageEl.textContent = t; messageEl.className = e ? 'err' : ''; };
+const updateCountEl = () => { countEl.textContent = srcData ? `${numSplats.toLocaleString()} splats` : ''; };
+
+// ── Load scene ────────────────────────────────────────────────────────────────
+async function loadScene(url) {
+  if (mode === 'paint') setMode('view');
+  viewer?.destroy();
+  viewer = null; srcData = null; numSplats = 0;
+  selectedMask = null; displayData = null; undoStack = [];
+  loadedWithFlipY = false;
+  syncUndoBtn();
+  setUIEnabled(false);
+  setStatus('Loading…');
+  setMessage('Fetching scene…');
+  progressEl.style.display = 'block';
+  progressBar.style.width  = '0%';
+
+  try {
+    viewer = new Viewer({
+      canvas,
+      background: document.getElementById('bgColor').value,
+      splatScale: parseFloat(document.getElementById('splatScale').value),
+      flipY: document.getElementById('flipY').checked,
+      onProgress(p) {
+        progressBar.style.width = `${(p * 100).toFixed(0)}%`;
+        setMessage(`Loading… ${(p * 100).toFixed(0)}%`);
+      },
+    });
+    await viewer.init();
+    await viewer.load(url);
+
+    srcData         = viewer._gaussians.slice();
+    numSplats       = viewer._numSplats;
+    selectedMask    = new Uint8Array(numSplats);
+    displayData     = srcData.slice();
+    loadedWithFlipY = document.getElementById('flipY').checked;
+
+    viewer.onFrame = (view, proj, w, h) => {
+      currentView = view; currentProj = proj; canvasW = w; canvasH = h;
+      drawOverlays(view, proj, w, h);
+    };
+    viewer.start();
+
+    computeBounds();
+    populateCropInputs();
+    progressEl.style.display = 'none';
+    setMessage('');
+    setStatus(url.split('/').pop().split('?')[0]);
+    updateCountEl();
+    setUIEnabled(true);
+
+  } catch (err) {
+    console.error('[HoloSplat]', err);
+    setStatus('Error — see console', true);
+    setMessage(err.message, true);
+    progressEl.style.display = 'none';
+  }
+}
+
+function setUIEnabled(on) {
+  document.getElementById('loadBtn').disabled        = false;
+  document.getElementById('resetBtn').disabled       = !on;
+  document.getElementById('applyXformBtn').disabled  = !on;
+  document.getElementById('exportPly').disabled      = !on;
+  document.getElementById('exportSpz').disabled      = !on;
+  document.getElementById('exportBoth').disabled     = !on;
+}
+
+document.getElementById('loadBtn').addEventListener('click', () => {
+  const u = urlInput.value.trim(); if (u) loadScene(u);
+});
+urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') document.getElementById('loadBtn').click(); });
+
+if (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+  urlInput.placeholder = `http://localhost:${location.port || '8080'}/scenes/  (.ply / .splat / .spz)`;
+
+// ── View controls ─────────────────────────────────────────────────────────────
+document.getElementById('bgColor').addEventListener('input', e => viewer?.setBackground(e.target.value));
+document.getElementById('splatScale').addEventListener('input', e => {
+  document.getElementById('scaleVal').textContent = parseFloat(e.target.value).toFixed(2);
+  viewer?.setSplatScale(parseFloat(e.target.value));
+});
+document.getElementById('autoRotate').addEventListener('change', e => viewer?.setAutoRotate(e.target.checked));
+document.getElementById('resetBtn').addEventListener('click', () => viewer?.resetCamera());
+
+// ── Display / highlight ───────────────────────────────────────────────────────
+const HIGHLIGHT = [1.0, 0.35, 0.0]; // orange
+
+function refreshDisplay() {
+  if (!srcData) return;
+  displayData.set(srcData);
+  for (let i = 0; i < numSplats; i++) {
+    if (selectedMask[i]) {
+      const d = i * 16;
+      displayData[d + 4] = HIGHLIGHT[0];
+      displayData[d + 5] = HIGHLIGHT[1];
+      displayData[d + 6] = HIGHLIGHT[2];
+    }
+  }
+  viewer?.uploadDisplay(displayData);
+}
+
+// ── Grid + Gizmo ─────────────────────────────────────────────────────────────
+const gridCanvas  = document.getElementById('gridCanvas');
+const gizmoCanvas = document.getElementById('gizmoCanvas');
+const gridCtx     = gridCanvas.getContext('2d');
+const gizmoCtx    = gizmoCanvas.getContext('2d');
+
+// Set gizmo canvas buffer size once (DPR-aware)
+{
+  const dpr = window.devicePixelRatio || 1;
+  gizmoCanvas.width  = Math.round(90 * dpr);
+  gizmoCanvas.height = Math.round(90 * dpr);
+}
+
+let gizmoHits = []; // [{id,neg,bx,by}] updated each draw
+
+// Clip a world-space line segment to near plane, return screen coords or null
+function clipLine(wx0,wy0,wz0, wx1,wy1,wz1, view, proj, w, h) {
+  let vx0=view[0]*wx0+view[4]*wy0+view[8]*wz0+view[12];
+  let vy0=view[1]*wx0+view[5]*wy0+view[9]*wz0+view[13];
+  let vz0=view[2]*wx0+view[6]*wy0+view[10]*wz0+view[14];
+  let vx1=view[0]*wx1+view[4]*wy1+view[8]*wz1+view[12];
+  let vy1=view[1]*wx1+view[5]*wy1+view[9]*wz1+view[13];
+  let vz1=view[2]*wx1+view[6]*wy1+view[10]*wz1+view[14];
+  const N = -0.001;
+  if (vz0 >= N && vz1 >= N) return null;
+  if (vz0 >= N) {
+    const t = (N-vz0)/(vz1-vz0);
+    vx0=vx0+t*(vx1-vx0); vy0=vy0+t*(vy1-vy0); vz0=N;
+  } else if (vz1 >= N) {
+    const t = (N-vz0)/(vz1-vz0);
+    vx1=vx0+t*(vx1-vx0); vy1=vy0+t*(vy1-vy0); vz1=N;
+  }
+  const toS = (vx,vy,vz) => [
+    (proj[0]*vx/(-vz)*0.5+0.5)*w,
+    (1-(proj[5]*vy/(-vz)*0.5+0.5))*h,
+  ];
+  return [...toS(vx0,vy0,vz0), ...toS(vx1,vy1,vz1)];
+}
+
+function drawGrid(view, proj, w, h) {
+  // Resize if needed (matches WebGPU canvas physical pixels)
+  if (gridCanvas.width !== w || gridCanvas.height !== h) {
+    gridCanvas.width = w; gridCanvas.height = h;
+  }
+  gridCtx.clearRect(0, 0, w, h);
+  if (!document.getElementById('showGrid').checked || !viewer) return;
+
+  const cam  = viewer.camera;
+  const r    = cam.radius;
+  const step = Math.pow(10, Math.floor(Math.log10(r * 0.35)));
+  const N    = 10;
+  const ext  = step * N;
+  // Snap grid origin to step grid
+  const ox   = Math.round(cam.target[0] / step) * step;
+  const gy   = cam.target[1];
+  const oz   = Math.round(cam.target[2] / step) * step;
+
+  gridCtx.lineWidth = 1;
+
+  // Draw lines running along Z (constant X) — center line is the Z-axis (blue)
+  for (let i = -N; i <= N; i++) {
+    const x     = ox + i * step;
+    const major = (i % 5 === 0);
+    const onZ   = (i === 0);
+    const fade  = 1 - Math.abs(i) / (N + 1);
+    const seg   = clipLine(x, gy, oz-ext, x, gy, oz+ext, view, proj, w, h);
+    if (!seg) continue;
+    gridCtx.strokeStyle = onZ
+      ? `rgba(80,100,255,${(0.75*fade).toFixed(2)})`
+      : major
+        ? `rgba(255,255,255,${(0.22*fade).toFixed(2)})`
+        : `rgba(255,255,255,${(0.09*fade).toFixed(2)})`;
+    gridCtx.lineWidth = onZ ? 1.5 : major ? 1.2 : 1;
+    gridCtx.beginPath(); gridCtx.moveTo(seg[0],seg[1]); gridCtx.lineTo(seg[2],seg[3]); gridCtx.stroke();
+  }
+  // Draw lines running along X (constant Z) — center line is the X-axis (red)
+  for (let i = -N; i <= N; i++) {
+    const z     = oz + i * step;
+    const major = (i % 5 === 0);
+    const onX   = (i === 0);
+    const fade  = 1 - Math.abs(i) / (N + 1);
+    const seg   = clipLine(ox-ext, gy, z, ox+ext, gy, z, view, proj, w, h);
+    if (!seg) continue;
+    gridCtx.strokeStyle = onX
+      ? `rgba(255,80,80,${(0.75*fade).toFixed(2)})`
+      : major
+        ? `rgba(255,255,255,${(0.22*fade).toFixed(2)})`
+        : `rgba(255,255,255,${(0.09*fade).toFixed(2)})`;
+    gridCtx.lineWidth = onX ? 1.5 : major ? 1.2 : 1;
+    gridCtx.beginPath(); gridCtx.moveTo(seg[0],seg[1]); gridCtx.lineTo(seg[2],seg[3]); gridCtx.stroke();
+  }
+}
+
+function drawGizmo(view) {
+  const gc  = gizmoCanvas;
+  const ctx = gizmoCtx;
+  const bw  = gc.width, bh = gc.height;
+  const dpr = bw / 90;
+  ctx.clearRect(0, 0, bw, bh);
+  if (!viewer) return;
+
+  const cx = bw/2, cy = bh/2, len = bw * 0.38;
+  const r_dot = bw * 0.10, r_hit = bw * 0.13;
+
+  // Project world axes to gizmo screen coords
+  // World X in view: (view[0], view[1], view[2])
+  // World Y in view: (view[4], view[5], view[6])
+  // World Z in view: (view[8], view[9], view[10])
+  const axes = [
+    { id:'x', neg:false, vx:view[0],  vy:view[1],  vz:view[2],  color:'#e05555', dim:'#7a2a2a', label:'X' },
+    { id:'x', neg:true,  vx:-view[0], vy:-view[1], vz:-view[2], color:'#7a2a2a', dim:'#7a2a2a', label:'-X' },
+    { id:'y', neg:false, vx:view[4],  vy:view[5],  vz:view[6],  color:'#55e055', dim:'#2a7a2a', label:'Y' },
+    { id:'y', neg:true,  vx:-view[4], vy:-view[5], vz:-view[6], color:'#2a7a2a', dim:'#2a7a2a', label:'-Y' },
+    { id:'z', neg:false, vx:view[8],  vy:view[9],  vz:view[10], color:'#5555e0', dim:'#2a2a7a', label:'Z' },
+    { id:'z', neg:true,  vx:-view[8], vy:-view[9], vz:-view[10],color:'#2a2a7a', dim:'#2a2a7a', label:'-Z' },
+  ].map(a => ({
+    ...a,
+    sx: cx + a.vx * len,
+    sy: cy - a.vy * len,   // screen Y flips view Y
+  })).sort((a,b) => b.vz - a.vz); // back-to-front by view-Z (draw highest vz first)
+
+  // Semi-transparent background
+  ctx.beginPath();
+  ctx.arc(cx, cy, bw*0.47, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.30)';
+  ctx.fill();
+
+  gizmoHits = [];
+  for (const ax of axes) {
+    // Stem
+    ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(ax.sx, ax.sy);
+    ctx.strokeStyle = ax.color;
+    ctx.lineWidth   = ax.neg ? 1 : 2;
+    ctx.setLineDash(ax.neg ? [3*dpr, 3*dpr] : []);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    if (!ax.neg) {
+      // Circle dot
+      ctx.beginPath(); ctx.arc(ax.sx, ax.sy, r_dot, 0, Math.PI*2);
+      ctx.fillStyle = ax.color; ctx.fill();
+      // Label
+      ctx.font         = `bold ${Math.round(bw*0.155)}px system-ui`;
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle    = '#fff';
+      ctx.fillText(ax.label, ax.sx, ax.sy);
+      gizmoHits.push({ id:ax.id, neg:false, bx:ax.sx, by:ax.sy, r:r_hit });
+    } else {
+      gizmoHits.push({ id:ax.id, neg:true,  bx:ax.sx, by:ax.sy, r:r_hit*0.8 });
+    }
+  }
+}
+
+function drawOverlays(view, proj, w, h) {
+  drawGrid(view, proj, w, h);
+  drawGizmo(view);
+}
+
+// Gizmo interaction
+gizmoCanvas.addEventListener('click', e => {
+  if (!viewer) return;
+  const rect = gizmoCanvas.getBoundingClientRect();
+  const dpr  = gizmoCanvas.width / 90;
+  const mx   = (e.clientX - rect.left) / rect.width  * gizmoCanvas.width;
+  const my   = (e.clientY - rect.top)  / rect.height * gizmoCanvas.height;
+  let best = null, bestD = Infinity;
+  for (const h of gizmoHits) {
+    const d = Math.hypot(mx - h.bx, my - h.by);
+    if (d < h.r && d < bestD) { bestD = d; best = h; }
+  }
+  if (best) snapToAxis(best);
+});
+
+gizmoCanvas.addEventListener('mousemove', e => {
+  if (!viewer) return;
+  const rect = gizmoCanvas.getBoundingClientRect();
+  const mx   = (e.clientX - rect.left) / rect.width  * gizmoCanvas.width;
+  const my   = (e.clientY - rect.top)  / rect.height * gizmoCanvas.height;
+  const hit  = gizmoHits.some(h => Math.hypot(mx-h.bx, my-h.by) < h.r);
+  gizmoCanvas.style.cursor = hit ? 'pointer' : 'default';
+});
+
+function snapToAxis({ id, neg }) {
+  if (!viewer) return;
+  const cam = viewer.camera, hp = Math.PI / 2;
+  if (id === 'x') { cam.theta = neg ? -hp : hp; cam.phi = 0; }
+  if (id === 'y') { cam.phi   = neg ? -(hp-0.001) : (hp-0.001); }
+  if (id === 'z') { cam.theta = neg ? Math.PI : 0; cam.phi = 0; }
+}
+
+// Toggle grid from View panel
+document.getElementById('showGrid').addEventListener('change', () => {
+  if (currentView) drawGrid(currentView, currentProj, canvasW, canvasH);
+});
+
+// ── Undo ─────────────────────────────────────────────────────────────────────
+function pushUndo() {
+  undoStack.push(srcData.slice());
+  if (undoStack.length > 15) undoStack.shift();
+  syncUndoBtn();
+}
+function syncUndoBtn() {
+  document.getElementById('undoBtn').disabled = undoStack.length === 0;
+}
+
+document.getElementById('undoBtn').addEventListener('click', () => {
+  if (!undoStack.length || !viewer) return;
+  const prev = undoStack.pop();
+  replaceScene(prev, prev.length / 16, true);
+  syncUndoBtn();
+});
+
+// Replace scene data (called by all destructive ops and undo)
+function replaceScene(data, count, fitCamera) {
+  viewer.setGaussians(data, count, fitCamera);
+  srcData      = data;
+  numSplats    = count;
+  selectedMask = new Uint8Array(count);
+  displayData  = srcData.slice();
+  computeBounds();
+  populateCropInputs();
+  refreshCropCount();
+  refreshSelCount();
+  updateCountEl();
+}
+
+// ── Crop ──────────────────────────────────────────────────────────────────────
+let dataBounds = {};
+
+function computeBounds() {
+  if (!srcData) return;
+  let x0=Infinity,x1=-Infinity,y0=Infinity,y1=-Infinity,z0=Infinity,z1=-Infinity;
+  for (let i = 0; i < numSplats; i++) {
+    const d = i*16, x=srcData[d], y=srcData[d+1], z=srcData[d+2];
+    if (x<x0)x0=x; if (x>x1)x1=x;
+    if (y<y0)y0=y; if (y>y1)y1=y;
+    if (z<z0)z0=z; if (z>z1)z1=z;
+  }
+  dataBounds = {x0,x1,y0,y1,z0,z1};
+}
+
+function populateCropInputs() {
+  const axes = [
+    ['cx0','cx1', dataBounds.x0, dataBounds.x1],
+    ['cy0','cy1', dataBounds.y0, dataBounds.y1],
+    ['cz0','cz1', dataBounds.z0, dataBounds.z1],
+  ];
+  for (const [minId, maxId, lo, hi] of axes) {
+    const step = Math.max(0.0001, (hi - lo) / 1000);
+    for (const [id, val] of [[minId, lo],[maxId, hi]]) {
+      const el = document.getElementById(id);
+      el.min = lo; el.max = hi; el.step = step; el.value = val;
+      document.getElementById(id + 'v').textContent = val.toFixed(3);
+    }
+  }
+  document.getElementById('cropCount').textContent = '';
+}
+
+function getCrop() {
+  return {
+    x0: +document.getElementById('cx0').value,
+    x1: +document.getElementById('cx1').value,
+    y0: +document.getElementById('cy0').value,
+    y1: +document.getElementById('cy1').value,
+    z0: +document.getElementById('cz0').value,
+    z1: +document.getElementById('cz1').value,
+  };
+}
+
+// Real-time preview: hide out-of-bounds points by zeroing alpha in displayData
+let cropRafPending = false;
+function scheduleCropPreview() {
+  if (cropRafPending) return;
+  cropRafPending = true;
+  requestAnimationFrame(() => { cropRafPending = false; applyCropPreview(); });
+}
+
+function applyCropPreview() {
+  if (!srcData) return;
+  const b = getCrop();
+  let hidden = 0;
+  displayData.set(srcData);
+  for (let i = 0; i < numSplats; i++) {
+    const d = i*16, x=srcData[d], y=srcData[d+1], z=srcData[d+2];
+    if (x<b.x0||x>b.x1||y<b.y0||y>b.y1||z<b.z0||z>b.z1) { displayData[d+7]=0; hidden++; }
+  }
+  viewer?.uploadDisplay(displayData);
+  document.getElementById('cropCount').textContent =
+    hidden ? `${hidden.toLocaleString()} points hidden` : 'All points within bounds';
+}
+
+// Commit: compact srcData to remove hidden points (called on slider release)
+function commitCrop() {
+  if (!srcData) return;
+  const b = getCrop();
+  let kept = 0;
+  const keep = new Uint8Array(numSplats);
+  for (let i = 0; i < numSplats; i++) {
+    const d = i*16, x=srcData[d], y=srcData[d+1], z=srcData[d+2];
+    if (x>=b.x0&&x<=b.x1&&y>=b.y0&&y<=b.y1&&z>=b.z0&&z<=b.z1) { keep[i]=1; kept++; }
+  }
+  if (kept === numSplats) return;
+  pushUndo();
+  const out = new Float32Array(kept * 16);
+  let j = 0;
+  for (let i = 0; i < numSplats; i++) if (keep[i]) { out.set(srcData.subarray(i*16,i*16+16), j*16); j++; }
+  replaceScene(out, kept, false);
+}
+
+['cx0','cx1','cy0','cy1','cz0','cz1'].forEach(id => {
+  const el = document.getElementById(id);
+  el.addEventListener('input', () => {
+    // Clamp min ≤ max for the paired slider
+    const paired = id.endsWith('0')
+      ? document.getElementById(id.replace('0','1'))
+      : document.getElementById(id.replace('1','0'));
+    if (id.endsWith('0') && +el.value > +paired.value) el.value = paired.value;
+    if (id.endsWith('1') && +el.value < +paired.value) el.value = paired.value;
+    document.getElementById(id + 'v').textContent = (+el.value).toFixed(3);
+    scheduleCropPreview();
+  });
+  el.addEventListener('change', commitCrop);
+});
+
+document.getElementById('resetBounds').addEventListener('click', () => {
+  populateCropInputs();
+  if (srcData) { displayData.set(srcData); viewer?.uploadDisplay(displayData); }
+  document.getElementById('cropCount').textContent = '';
+});
+
+// ── Paint ─────────────────────────────────────────────────────────────────────
+// Events are captured on canvasWrap (parent of canvas) so left-drag paints
+// while right-drag / wheel pass through to the camera unchanged.
+const canvasWrap = document.getElementById('canvasWrap');
+let _paintHandlers = null;
+
+function enterPaint() {
+  // Camera stays attached — we intercept only left-button events
+  canvas.style.cursor = 'none';
+  brushCursor.style.display = 'block';
+
+  const onDown = e => {
+    if (e.button !== 0) return;        // right/middle → camera
+    e.stopPropagation(); e.preventDefault();
+    isPainting = true;
+    paintAdd   = !e.ctrlKey;
+    paintAt(e.clientX, e.clientY, paintAdd);
+  };
+
+  const onMove = e => {
+    const rect = canvasWrap.getBoundingClientRect();
+    const r    = parseInt(brushSizeIn.value);
+    brushCursor.style.left   = `${e.clientX - rect.left}px`;
+    brushCursor.style.top    = `${e.clientY - rect.top}px`;
+    brushCursor.style.width  = `${r*2}px`;
+    brushCursor.style.height = `${r*2}px`;
+    if (!isPainting) return;           // camera is handling a right-drag
+    e.stopPropagation();
+    const now = Date.now();
+    if (now - lastPaintT < 30) return;
+    lastPaintT = now;
+    paintAt(e.clientX, e.clientY, paintAdd);
+  };
+
+  const onUp = e => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    isPainting = false;
+  };
+
+  const onLeave = () => { isPainting = false; brushCursor.style.display = 'none'; };
+  const onEnter = () => { brushCursor.style.display = 'block'; };
+
+  const opts = { capture: true };
+  canvasWrap.addEventListener('mousedown',  onDown,  opts);
+  canvasWrap.addEventListener('mousemove',  onMove,  opts);
+  canvasWrap.addEventListener('mouseup',    onUp,    opts);
+  canvasWrap.addEventListener('mouseleave', onLeave);
+  canvasWrap.addEventListener('mouseenter', onEnter);
+  _paintHandlers = { onDown, onMove, onUp, onLeave, onEnter };
+}
+
+function exitPaint() {
+  canvas.style.cursor = '';
+  brushCursor.style.display = 'none';
+  isPainting = false;
+  if (!_paintHandlers) return;
+  const h = _paintHandlers, opts = { capture: true };
+  canvasWrap.removeEventListener('mousedown',  h.onDown,  opts);
+  canvasWrap.removeEventListener('mousemove',  h.onMove,  opts);
+  canvasWrap.removeEventListener('mouseup',    h.onUp,    opts);
+  canvasWrap.removeEventListener('mouseleave', h.onLeave);
+  canvasWrap.removeEventListener('mouseenter', h.onEnter);
+  _paintHandlers = null;
+}
+
+brushSizeIn.addEventListener('input', () => {
+  document.getElementById('brushVal').textContent = brushSizeIn.value + 'px';
+});
+
+let isPainting = false, paintAdd = true, lastPaintT = 0;
+
+function paintAt(clientX, clientY, add) {
+  if (!srcData || !currentView || !currentProj) return;
+  const rect = canvas.getBoundingClientRect();
+  const dpr  = window.devicePixelRatio || 1;
+  const cx   = (clientX - rect.left) * dpr;
+  const cy   = (clientY - rect.top)  * dpr;
+  const br   = parseInt(brushSizeIn.value) * dpr;
+  const r2   = br * br;
+  const view = currentView, proj = currentProj;
+  let changed = false;
+
+  for (let i = 0; i < numSplats; i++) {
+    const d  = i * 16;
+    const wx = srcData[d], wy = srcData[d+1], wz = srcData[d+2];
+    const vx = view[0]*wx + view[4]*wy + view[8]*wz  + view[12];
+    const vy = view[1]*wx + view[5]*wy + view[9]*wz  + view[13];
+    const vz = view[2]*wx + view[6]*wy + view[10]*wz + view[14];
+    if (vz >= 0) continue;
+    const cw = -vz;
+    const sx = (proj[0]*vx/cw * 0.5 + 0.5) * canvasW;
+    const sy = (1 - (proj[5]*vy/cw * 0.5 + 0.5)) * canvasH;
+    const dx = sx - cx, dy = sy - cy;
+    if (dx*dx + dy*dy > r2) continue;
+    const was = selectedMask[i];
+    selectedMask[i] = add ? 1 : 0;
+    if (selectedMask[i] !== was) changed = true;
+  }
+  if (changed) { refreshDisplay(); refreshSelCount(); }
+}
+
+function refreshSelCount() {
+  let n = 0;
+  for (let i = 0; i < numSplats; i++) if (selectedMask[i]) n++;
+  document.getElementById('selCount').textContent = n ? `${n.toLocaleString()} selected` : 'No selection';
+  document.getElementById('deleteSelected').disabled = n === 0;
+}
+
+document.getElementById('selAll').addEventListener('click', () => {
+  if (!srcData) return; selectedMask.fill(1); refreshDisplay(); refreshSelCount();
+});
+document.getElementById('selNone').addEventListener('click', () => {
+  if (!srcData) return; selectedMask.fill(0); refreshDisplay(); refreshSelCount();
+});
+document.getElementById('selInvert').addEventListener('click', () => {
+  if (!srcData) return;
+  for (let i = 0; i < numSplats; i++) selectedMask[i] ^= 1;
+  refreshDisplay(); refreshSelCount();
+});
+
+document.getElementById('deleteSelected').addEventListener('click', () => {
+  if (!srcData) return;
+  let kept = 0;
+  for (let i = 0; i < numSplats; i++) if (!selectedMask[i]) kept++;
+  if (kept === numSplats) return;
+  pushUndo();
+  const out = new Float32Array(kept * 16);
+  let j = 0;
+  for (let i = 0; i < numSplats; i++) if (!selectedMask[i]) { out.set(srcData.subarray(i*16,i*16+16), j*16); j++; }
+  replaceScene(out, kept, false);
+});
+
+// ── Blender-style number fields ───────────────────────────────────────────────
+const _bv = {};  // id → value
+// Lifecycle callbacks (set by consumers)
+let _bnumOnDragStart = null;  // (id) called on mousedown / before text edit
+let _bnumOnChange    = null;  // (id) called each drag step
+let _bnumOnCommit    = null;  // (id) called on drag release OR Enter/Escape in text
+
+function bnumInit() {
+  document.querySelectorAll('.bnum').forEach(el => {
+    _bv[el.id] = parseFloat(el.dataset.default ?? '0');
+    bnumRender(el);
+    bnumBind(el);
+  });
+}
+
+function bnumRender(el) {
+  const val    = _bv[el.id] ?? 0;
+  const dec    = parseInt(el.dataset.dec   ?? '3');
+  const fill   = parseFloat(el.dataset.fill ?? '0.1');
+  const center = parseFloat(el.dataset.default ?? '0');
+  const lbl    = el.dataset.label ?? '';
+  const rel    = val - center;
+  const pct    = Math.atan(Math.abs(rel) * fill) / Math.PI * 100; // 0–50%
+  const side   = rel >= 0 ? `left:50%;width:${pct.toFixed(2)}%` : `right:50%;width:${pct.toFixed(2)}%`;
+  el.innerHTML = `<div class="bnum-fill" style="${side}"></div><span class="bnum-label">${lbl}</span><span class="bnum-num">${val.toFixed(dec)}</span>`;
+}
+
+const bnumGet = id => _bv[id] ?? 0;
+const bnumSet = (id, val) => { _bv[id] = val; const el = document.getElementById(id); if (el) bnumRender(el); };
+
+function bnumBind(el) {
+  el.addEventListener('mousedown', e => {
+    if (el.dataset.editing || e.button !== 0) return;
+    e.preventDefault();
+    _bnumOnDragStart?.(el.id);
+    const x0  = e.clientX;
+    const v0  = _bv[el.id];
+    const stp = parseFloat(el.dataset.step ?? '0.01');
+    let moved = 0;
+
+    const onMove = ev => {
+      const dx  = ev.clientX - x0;
+      moved = Math.abs(dx);
+      const spd = ev.shiftKey ? stp * 0.1 : ev.ctrlKey ? stp * 10 : stp;
+      _bv[el.id] = v0 + dx * spd;
+      bnumRender(el);
+      _bnumOnChange?.(el.id);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+      if (moved < 3) bnumEdit(el);
+      else           _bnumOnCommit?.(el.id);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+}
+
+function bnumEdit(el) {
+  if (el.dataset.editing) return;
+  el.dataset.editing = '1';
+  _bnumOnDragStart?.(el.id);
+  const dec   = parseInt(el.dataset.dec ?? '3');
+  const input = document.createElement('input');
+  input.type  = 'text';
+  input.value = (_bv[el.id] ?? 0).toFixed(dec);
+  el.appendChild(input);
+  requestAnimationFrame(() => { input.focus(); input.select(); });
+
+  const finish = accepted => {
+    input.remove(); delete el.dataset.editing; bnumRender(el);
+    _bnumOnCommit?.(el.id);   // commit whether accepted or cancelled
+  };
+  const commit = () => { const n = parseFloat(input.value); if (!isNaN(n)) _bv[el.id] = n; finish(true); };
+  const cancel = () => finish(false);
+
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+    if (e.key === 'Escape') { e.preventDefault(); cancel(); }
+    e.stopPropagation();
+  });
+  input.addEventListener('blur', commit);
+  input.addEventListener('mousedown', e => e.stopPropagation());
+}
+
+bnumInit();
+
+// ── Transform ─────────────────────────────────────────────────────────────────
+const XFORM_IDS = new Set(['tx','ty','tz','rx','ry','rz','ts']);
+let preXformData    = null;  // srcData snapshot taken at drag/edit start
+let xformStartVals  = {};    // bnum values captured at the same moment
+let xformRafId      = 0;
+
+// Delta params: how much to move *from the snapshot* to reach current values.
+// Translations and rotations subtract; scale divides (multiplicative).
+function getXformDelta() {
+  const s = xformStartVals;
+  return {
+    tx: bnumGet('tx') - (s.tx ?? 0),
+    ty: bnumGet('ty') - (s.ty ?? 0),
+    tz: bnumGet('tz') - (s.tz ?? 0),
+    rx: (bnumGet('rx') - (s.rx ?? 0)) * Math.PI / 180,
+    ry: (bnumGet('ry') - (s.ry ?? 0)) * Math.PI / 180,
+    rz: (bnumGet('rz') - (s.rz ?? 0)) * Math.PI / 180,
+    sc: bnumGet('ts') / (s.ts ?? 1),
+  };
+}
+function isIdentityXform({ tx, ty, tz, rx, ry, rz, sc }) {
+  return !tx && !ty && !tz && !rx && !ry && !rz && sc === 1;
+}
+
+// Write transform(src) → dst in-place (no allocation)
+function applyXformInPlace(src, dst, count, { tx, ty, tz, rx, ry, rz, sc }) {
+  if (isIdentityXform({ tx, ty, tz, rx, ry, rz, sc })) { dst.set(src); return; }
+  const Q = eulerToQuat(rx, ry, rz);
+  for (let i = 0; i < count; i++) {
+    const s = i * 16;
+    const p = qrotate(Q, [src[s]*sc, src[s+1]*sc, src[s+2]*sc]);
+    dst[s]   = p[0]+tx; dst[s+1] = p[1]+ty; dst[s+2] = p[2]+tz;
+    dst[s+3] = src[s+3];
+    dst[s+4] = src[s+4]; dst[s+5] = src[s+5]; dst[s+6] = src[s+6]; dst[s+7] = src[s+7];
+    dst[s+8]  = src[s+8]*sc; dst[s+9] = src[s+9]*sc; dst[s+10] = src[s+10]*sc;
+    dst[s+11] = src[s+11];
+    const qq = qmul(Q, [src[s+12], src[s+13], src[s+14], src[s+15]]);
+    const ql = Math.sqrt(qq[0]*qq[0]+qq[1]*qq[1]+qq[2]*qq[2]+qq[3]*qq[3]) || 1;
+    dst[s+12] = qq[0]/ql; dst[s+13] = qq[1]/ql; dst[s+14] = qq[2]/ql; dst[s+15] = qq[3]/ql;
+  }
+}
+
+function scheduleXformPreview() {
+  cancelAnimationFrame(xformRafId);
+  xformRafId = requestAnimationFrame(() => {
+    if (!srcData || !preXformData) return;
+    applyXformInPlace(preXformData, displayData, numSplats, getXformDelta());
+    viewer?.uploadDisplay(displayData);
+  });
+}
+
+function commitXform() {
+  if (!srcData || !preXformData) return;
+  const delta = getXformDelta();
+  if (isIdentityXform(delta)) {
+    displayData.set(srcData); viewer?.uploadDisplay(displayData);
+    preXformData = null; return;
+  }
+  pushUndo();
+  const out = new Float32Array(numSplats * 16);
+  applyXformInPlace(preXformData, out, numSplats, delta);
+  preXformData = null;
+  // Values intentionally kept — they show cumulative offset since last Apply
+  replaceScene(out, numSplats, false);
+}
+
+function resetXformValues() {
+  XFORM_IDS.forEach(id => {
+    _bv[id] = id === 'ts' ? 1 : 0;
+    const el = document.getElementById(id); if (el) bnumRender(el);
+  });
+  preXformData = null;
+}
+
+// Wire bnum callbacks — snapshot both data AND current values at drag/edit start
+_bnumOnDragStart = id => {
+  if (!XFORM_IDS.has(id) || !srcData) return;
+  preXformData = srcData.slice();
+  XFORM_IDS.forEach(fid => { xformStartVals[fid] = _bv[fid] ?? (fid === 'ts' ? 1 : 0); });
+};
+_bnumOnChange = id => { if (XFORM_IDS.has(id)) scheduleXformPreview(); };
+_bnumOnCommit = id => { if (XFORM_IDS.has(id)) commitXform(); };
+
+// "Apply Transforms" — bakes nothing (data already committed), just zeroes the UI values
+document.getElementById('applyXformBtn').addEventListener('click', () => {
+  if (!srcData) return;
+  resetXformValues();
+});
+
+// ── Math helpers ──────────────────────────────────────────────────────────────
+function eulerToQuat(rx, ry, rz) {
+  const cx=Math.cos(rx*.5),sx=Math.sin(rx*.5);
+  const cy=Math.cos(ry*.5),sy=Math.sin(ry*.5);
+  const cz=Math.cos(rz*.5),sz=Math.sin(rz*.5);
+  return [sx*cy*cz+cx*sy*sz, cx*sy*cz-sx*cy*sz, cx*cy*sz+sx*sy*cz, cx*cy*cz-sx*sy*sz];
+}
+function qmul([ax,ay,az,aw],[bx,by,bz,bw]) {
+  return [aw*bx+ax*bw+ay*bz-az*by, aw*by-ax*bz+ay*bw+az*bx, aw*bz+ax*by-ay*bx+az*bw, aw*bw-ax*bx-ay*by-az*bz];
+}
+function qrotate([qx,qy,qz,qw],[vx,vy,vz]) {
+  const tx=2*(qy*vz-qz*vy), ty=2*(qz*vx-qx*vz), tz=2*(qx*vy-qy*vx);
+  return [vx+qw*tx+qy*tz-qz*ty, vy+qw*ty+qz*tx-qx*tz, vz+qw*tz+qx*ty-qy*tx];
+}
+
+// ── PLY export ────────────────────────────────────────────────────────────────
+const SH_C0 = 0.28209479177387814;
+
+function buildPly(data, count) {
+  const hdr = [
+    'ply','format binary_little_endian 1.0',
+    `element vertex ${count}`,
+    'property float x','property float y','property float z',
+    'property float f_dc_0','property float f_dc_1','property float f_dc_2',
+    'property float opacity',
+    'property float scale_0','property float scale_1','property float scale_2',
+    'property float rot_0','property float rot_1','property float rot_2','property float rot_3',
+    'end_header\n',
+  ].join('\n');
+  const hdrBytes = new TextEncoder().encode(hdr);
+  const body = new Float32Array(count * 14);
+  for (let i = 0; i < count; i++) {
+    const d=i*16, b=i*14;
+    body[b]   = data[d]; body[b+1] = data[d+1]; body[b+2] = data[d+2];
+    body[b+3] = (data[d+4]-0.5)/SH_C0;
+    body[b+4] = (data[d+5]-0.5)/SH_C0;
+    body[b+5] = (data[d+6]-0.5)/SH_C0;
+    const a = Math.max(1e-6, Math.min(1-1e-6, data[d+7]));
+    body[b+6] = Math.log(a/(1-a));
+    body[b+7] = Math.log(Math.max(1e-9, data[d+8]));
+    body[b+8] = Math.log(Math.max(1e-9, data[d+9]));
+    body[b+9] = Math.log(Math.max(1e-9, data[d+10]));
+    body[b+10]=data[d+15]; body[b+11]=data[d+12]; body[b+12]=data[d+13]; body[b+13]=data[d+14];
+  }
+  const out = new Uint8Array(hdrBytes.byteLength + body.buffer.byteLength);
+  out.set(hdrBytes);
+  out.set(new Uint8Array(body.buffer), hdrBytes.byteLength);
+  return out;
+}
+
+function download(bytes, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bytes], {type:'application/octet-stream'}));
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function baseName() {
+  return (urlInput.value.trim().split('/').pop().split('?')[0].replace(/\.[^.]+$/,'') || 'scene');
+}
+
+// Same 180° X-rotation as viewer's flipYInPlace — used to round-trip the coordinate
+// convention back to the original when the file was loaded with flipY=true.
+// Position: (x,y,z)→(x,-y,-z)   Quaternion: (qx,qy,qz,qw)→(qw,-qz,qy,-qx)
+function applyFlipY(data, count) {
+  for (let i = 0; i < count; i++) {
+    const d = i * 16;
+    data[d + 1] = -data[d + 1];
+    data[d + 2] = -data[d + 2];
+    const qx = data[d+12], qy = data[d+13], qz = data[d+14], qw = data[d+15];
+    data[d+12] =  qw; data[d+13] = -qz; data[d+14] =  qy; data[d+15] = -qx;
+  }
+}
+
+// Flush any in-flight transform edit, then return the data ready for export.
+// If the scene was loaded with flipY the data lives in Y-up (OpenGL) space inside the
+// editor, but was originally Y-down (COLMAP). Most 3DGS tools / Blender addons that
+// import PLY expect the original convention, so we un-flip before writing the file.
+function getExportData() {
+  commitXform();            // flush any pending bnum drag or text-input
+  if (!loadedWithFlipY) return srcData;
+  const copy = srcData.slice();
+  applyFlipY(copy, numSplats);   // restore original coordinate convention
+  return copy;
+}
+
+document.getElementById('exportPly').addEventListener('click', () => {
+  if (!srcData) return;
+  download(buildPly(getExportData(), numSplats), baseName()+'.ply');
+});
+
+document.getElementById('exportSpz').addEventListener('click', async () => {
+  if (!srcData) return;
+  const btn = document.getElementById('exportSpz');
+  btn.disabled = true;
+  // SPZ is HoloSplat-native; reload in HoloSplat with flipY to match, so export as-is
+  commitXform();
+  try { download(await compressToSpz(srcData, numSplats), baseName()+'.spz'); }
+  finally { btn.disabled = false; }
+});
+
+document.getElementById('exportBoth').addEventListener('click', async () => {
+  if (!srcData) return;
+  const exportData = getExportData();  // also calls commitXform()
+  download(buildPly(exportData, numSplats), baseName()+'.ply');
+  const btn = document.getElementById('exportBoth');
+  btn.disabled = true;
+  try { download(await compressToSpz(srcData, numSplats), baseName()+'.spz'); }
+  finally { btn.disabled = false; }
+});
+</script>
+</body>
+</html>

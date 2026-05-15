@@ -17,7 +17,8 @@ export class OrbitCamera {
     this.target = [0, 0, 0];
 
     // Set to false to disable all input handling (e.g. when scroll-scene owns playback).
-    this.enabled = true;
+    this.enabled    = true;
+    this.panEnabled = true;
 
     this._drag    = null;      // { x, y, button }
     this._touches = [];
@@ -69,6 +70,7 @@ export class OrbitCamera {
 
   _mouseDown(e) {
     if (!this.enabled) return;
+    if (e.button === 2 && !this.panEnabled) return;
     this._drag = { x: e.clientX, y: e.clientY, button: e.button };
     e.preventDefault();
   }
@@ -122,11 +124,13 @@ export class OrbitCamera {
         this.radius = Math.max(0.01, this.radius * (prevDist / currDist));
       }
       // Two-finger pan (centroid delta)
-      const prevCx = (prev[0].x + prev[1].x) * 0.5;
-      const prevCy = (prev[0].y + prev[1].y) * 0.5;
-      const currCx = (curr[0].x + curr[1].x) * 0.5;
-      const currCy = (curr[0].y + curr[1].y) * 0.5;
-      this._pan(currCx - prevCx, currCy - prevCy);
+      if (this.panEnabled) {
+        const prevCx = (prev[0].x + prev[1].x) * 0.5;
+        const prevCy = (prev[0].y + prev[1].y) * 0.5;
+        const currCx = (curr[0].x + curr[1].x) * 0.5;
+        const currCy = (curr[0].y + curr[1].y) * 0.5;
+        this._pan(currCx - prevCx, currCy - prevCy);
+      }
     }
 
     this._touches = curr;

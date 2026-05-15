@@ -176,8 +176,9 @@ function parseAct(el, markers, lastFrame) {
     };
   }
 
-  const fromAttr   = el.dataset.from ?? '';
-  const isPingpong = fromAttr === 'pingpong-start';
+  const fromAttr      = el.dataset.from ?? '';
+  const isPingpong    = fromAttr === 'pingpong-start';
+  const isFreecamera  = fromAttr === 'freecamera-start';
 
   const from = resolveFrame(fromAttr,        markers, 0);
   const to   = resolveFrame(el.dataset.to,   markers, lastFrame);
@@ -192,7 +193,7 @@ function parseAct(el, markers, lastFrame) {
 
   return {
     el,
-    type: isPingpong ? 'pingpong' : 'act',
+    type: isPingpong ? 'pingpong' : isFreecamera ? 'freecamera' : 'act',
     from,
     to,
     loop,
@@ -212,9 +213,8 @@ function parseCaptions(el) {
  */
 function actFrame(act, progress) {
   if (act.type === 'hold') return act.frame;
-  // Pingpong acts own their own playback; only commit to end-frame when
-  // fully scrolled past so the next act gets a clean starting point.
-  if (act.type === 'pingpong') return progress >= 1 ? act.to : act.from;
+  if (act.type === 'pingpong'   ) return progress >= 1 ? act.to : act.from;
+  if (act.type === 'freecamera' ) return progress >= 1 ? act.to : act.from;
 
   const { from, to, loop } = act;
   const range = to - from;
@@ -273,19 +273,27 @@ export function scrollScene(sceneEl, playerInstance, opts = {}) {
   // Active while the user is scrolled into a pingpong act; stops automatically
   // when they scroll out, handing control back to the scroll-seek path.
 
-  let ppBlend         = Math.max(0, Math.min(0.49, opts.pingpongBlend ?? 0.15));
-  let ppActive        = false;
-  let ppDir           = 1;
-  let ppFrame         = 0;
-  let ppStart         = 0;
-  let ppEnd           = 0;
-  let ppLastTime      = null;
-  let ppRafId         = null;
-  let ppBlendProgress = 0;  // updated each scroll tick; drives entry/exit blend
+  let ppActive   = false;
+  let ppDir      = 1;
+  let ppFrame    = 0;
+  let ppStart    = 0;
+  let ppEnd      = 0;
+  let ppLastTime = null;
+  let ppRafId    = null;
+
+  // Exit transition: after leaving a pingpong zone, ease from the captured
+  // pingpong frame to the scroll-driven target over the first portion of the
+  // next act. PP_TRANSITION_ZONE is that fraction of the next act's scroll range.
+  const PP_TRANSITION_ZONE = opts.pingpongTransition ?? 0.25;
+  let ppTransitioning  = false;
+  let ppCapturedFrame  = 0;
+
+  let fcActive = false; // freecamera section currently active
 
   // fromEnd=true when entering from below (scrolling up): start at ppEnd, go backward.
   function startPingpong(startFrame, endFrame, fromEnd = false) {
     if (ppActive) return;
+    ppTransitioning = false;
     ppActive   = true;
     ppStart    = startFrame;
     ppEnd      = endFrame;
@@ -313,19 +321,7 @@ export function scrollScene(sceneEl, playerInstance, opts = {}) {
     if (ppFrame >= ppEnd)   { ppFrame = ppEnd;   ppDir = -1; }
     if (ppFrame <= ppStart) { ppFrame = ppStart;  ppDir =  1; }
 
-    // Entry/exit blend: cross-fade between boundary frame and live pingpong frame
-    // so the camera never pops when the user scrolls into or out of this section.
-    // The blend is symmetric — the low-p zone handles entry from above and exit
-    // going up; the high-p zone handles exit going down and entry from below.
-    let frame = ppFrame;
-    const p   = ppBlendProgress;
-    if (p < ppBlend) {
-      frame = lerp(ppStart, ppFrame, smoothstep(0, ppBlend, p));
-    } else if (p > 1 - ppBlend) {
-      frame = lerp(ppFrame, ppEnd, smoothstep(1 - ppBlend, 1, p));
-    }
-
-    playerInstance.animation.seekFrame(frame);
+    playerInstance.animation.seekFrame(ppFrame);
   }
 
   // ── Act building ────────────────────────────────────────────────────────────
@@ -363,19 +359,44 @@ export function scrollScene(sceneEl, playerInstance, opts = {}) {
       // p === 1: fully scrolled past — continue to check next act
     }
 
-    // Pingpong acts own their own rAF loop — scroll only starts/stops it.
-    const inPingpong = activeAct.type === 'pingpong'
-      && activeProgress > 0 && activeProgress < 1;
+    const inPingpong   = activeAct.type === 'pingpong'   && activeProgress > 0 && activeProgress < 1;
+    const inFreecamera = activeAct.type === 'freecamera' && activeProgress > 0 && activeProgress < 1;
 
+    // ── Pingpong ──────────────────────────────────────────────────────────────
     if (inPingpong) {
-      ppBlendProgress = activeProgress;
-      if (!ppActive) {
-        // Entering from below (scrolling up) if we're already past halfway.
-        startPingpong(activeAct.from, activeAct.to, activeProgress > 0.5);
+      ppTransitioning = false;
+      if (!ppActive) startPingpong(activeAct.from, activeAct.to, activeProgress > 0.5);
+    } else {
+      if (ppActive) { ppCapturedFrame = ppFrame; ppTransitioning = true; }
+      stopPingpong();
+    }
+
+    // ── Freecamera ────────────────────────────────────────────────────────────
+    if (inFreecamera) {
+      if (!fcActive) {
+        fcActive = true;
+        playerInstance.setCameraFree(true);
+        playerInstance.camera.enabled    = true;
+        playerInstance.camera.panEnabled = false;
       }
     } else {
-      stopPingpong();
-      playerInstance.animation.seekFrame(frame);
+      if (fcActive) {
+        fcActive = false;
+        playerInstance.setCameraFree(false);
+        playerInstance.camera.enabled    = false;
+        playerInstance.camera.panEnabled = true;
+      }
+    }
+
+    // ── Seek (skip when pingpong or freecamera own the camera) ────────────────
+    if (!inPingpong && !inFreecamera) {
+      if (ppTransitioning) {
+        const t = smoothstep(0, PP_TRANSITION_ZONE, activeProgress);
+        if (t >= 1) ppTransitioning = false;
+        playerInstance.animation.seekFrame(lerp(ppCapturedFrame, frame, t));
+      } else {
+        playerInstance.animation.seekFrame(frame);
+      }
     }
 
     // ── Debug: log on act change ────────────────────────────────────────────
@@ -435,13 +456,15 @@ export function scrollScene(sceneEl, playerInstance, opts = {}) {
      * Re-read act elements from the DOM and re-resolve marker names.
      * Call after programmatic DOM changes to .hs-track.
      */
-    rebuild() { stopPingpong(); buildActs(); update(); },
-
-    get pingpongBlend()    { return ppBlend; },
-    setPingpongBlend(v)    { ppBlend = Math.max(0, Math.min(0.49, v)); },
+    rebuild() {
+      stopPingpong(); ppTransitioning = false;
+      if (fcActive) { fcActive = false; playerInstance.setCameraFree(false); playerInstance.camera.panEnabled = true; }
+      buildActs(); update();
+    },
 
     destroy() {
-      stopPingpong();
+      stopPingpong(); ppTransitioning = false;
+      if (fcActive) { fcActive = false; playerInstance.setCameraFree(false); playerInstance.camera.panEnabled = true; }
       window.removeEventListener('scroll', onScroll);
       playerInstance.camera.enabled = true;
       playerInstance.setAnimationPaused(false);
