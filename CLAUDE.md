@@ -66,6 +66,10 @@ Flat `Float32Array`, 16 floats per splat:
 
 `from`/`to`/`frame` reference Blender timeline marker names exported in the animation JSON.
 
+## Scene format preference
+
+Always prefer `.spz` over `.ply` or `.splat` when recommending or generating scene file paths, configs, or examples. SPZ is the primary format — smaller files, faster loads. Use `.ply` only when the source toolchain cannot export SPZ.
+
 ## Editor
 
 The `/holosplat` editor is a standalone HTML page that:

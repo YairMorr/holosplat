@@ -55,6 +55,7 @@
  */
 
 import { Viewer } from './viewer.js';
+import { splatNameFromId } from './animation.js';
 
 // ── CSS (injected once per page) ──────────────────────────────────────────────
 
@@ -118,18 +119,29 @@ export function player(container, opts = {}) {
     : container;
   if (!root) throw new Error(`HoloSplat: container not found — "${container}"`);
 
+  // data-hs-* attributes on the container are fallbacks for opts
+  const dataSrc   = root.getAttribute('data-hs-scene')     || root.getAttribute('data-holosplat')      || undefined;
+  const dataAnim  = root.getAttribute('data-hs-animation') || root.getAttribute('data-holosplat-anim') || undefined;
+  const dataFlipY = root.getAttribute('data-hs-flip-y') === 'true';
+
   const {
-    src,
-    animation:  animSrc,
+    scene,               // preferred name
+    src:      srcAlias,  // kept for backward compat
+    parts,
+    animation:  animSrc = dataAnim,
+    partsDir,
+    partsExt    = '',
     background  = 'transparent',
     fov         = 60,
     near        = 0.1,
     far         = 2000,
     splatScale  = 1,
     autoRotate  = false,
-    flipY       = false,
+    flipY       = dataFlipY,
     onLoad, onProgress, onError,
   } = opts;
+
+  const src = scene ?? srcAlias ?? dataSrc;
 
   // ── Build DOM ───────────────────────────────────────────────────────────────
   root.classList.add('hs-player');
@@ -259,19 +271,37 @@ export function player(container, opts = {}) {
   };
 
   // ── Load scene ───────────────────────────────────────────────────────────────
+  // These throw on failure so the boot sequence can catch and show the error.
+  // showReady / onLoad are called by boot after ALL parallel loads finish.
   async function load(url) {
     showLoading();
     bar.style.width = '0%';
     try {
       await viewer.load(url);
       showReady();
-      if (onLoad) onLoad();
     } catch (err) {
       const msg = navigator.gpu
         ? err.message
         : 'WebGPU not supported. Use Chrome 113+ or Edge 113+.';
       showError(msg);
       if (onError) onError(err);
+      throw err;
+    }
+  }
+
+  async function loadPartsMap(partsMap) {
+    showLoading();
+    bar.style.width = '0%';
+    try {
+      await viewer.loadParts(partsMap);
+      showReady();
+    } catch (err) {
+      const msg = navigator.gpu
+        ? err.message
+        : 'WebGPU not supported. Use Chrome 113+ or Edge 113+.';
+      showError(msg);
+      if (onError) onError(err);
+      throw err;
     }
   }
 
@@ -293,26 +323,10 @@ export function player(container, opts = {}) {
     }
   }
 
-  // ── Boot ────────────────────────────────────────────────────────────────────
-  viewer.init()
-    .then(() => {
-      viewer.start();
-      const loads = [];
-      if (src)     loads.push(load(src));
-      if (animSrc) loads.push(loadAnim(animSrc));
-      return Promise.all(loads);
-    })
-    .catch(err => {
-      const msg = navigator.gpu
-        ? err.message
-        : 'WebGPU not supported. Use Chrome 113+ or Edge 113+.';
-      showError(msg);
-      if (onError) onError(err);
-    });
-
   // ── Public API ───────────────────────────────────────────────────────────────
-  return {
+  const api = {
     load,
+    loadParts: loadPartsMap,
     loadAnim,
     destroy() {
       viewer.destroy();
@@ -331,6 +345,53 @@ export function player(container, opts = {}) {
     get animation()          { return viewer._animation; },
     get animationPaused()    { return viewer._animPaused; },
   };
+
+  // Register early so the editor script can find the entry even before boot.
+  if (!window.__hsPlayers) window.__hsPlayers = [];
+  window.__hsPlayers.push({ root, api, viewer });
+
+  // ── Boot ────────────────────────────────────────────────────────────────────
+  viewer.init()
+    .then(async () => {
+      viewer.start();
+      if (partsDir && animSrc) {
+        // Sequential: load animation first, then derive + load parts from object IDs
+        const anim = await loadAnim(animSrc);
+        if (anim?.objects.length) {
+          const dir = partsDir.replace(/\/?$/, '/');
+          const autoPartsMap = Object.fromEntries(
+            anim.objects.map(obj => [obj.id, `${dir}${splatNameFromId(obj.id)}${partsExt}`])
+          );
+          await loadPartsMap(autoPartsMap);
+        }
+      } else {
+        const loads = [];
+        if (parts)    loads.push(loadPartsMap(parts));
+        else if (src) loads.push(load(src));
+        if (animSrc)  loads.push(loadAnim(animSrc));
+        await Promise.all(loads);
+      }
+      // All loads done — show ready and call onLoad with animation guaranteed available
+      showReady();
+      onLoad?.();
+    })
+    .catch(err => {
+      // scene/parts errors already showed their own error UI; only handle
+      // unexpected failures here (e.g. viewer.init() failing)
+      if (!navigator.gpu) showError('WebGPU not supported. Use Chrome 113+ or Edge 113+.');
+    });
+
+  // Inject editor overlay when ?hs is in the URL (dev only)
+  if (typeof location !== 'undefined' &&
+      new URLSearchParams(location.search).has('hs') &&
+      !document.getElementById('__hs-script')) {
+    const s = document.createElement('script');
+    s.id  = '__hs-script';
+    s.src = '/holosplat/editor.js';
+    document.head.appendChild(s);
+  }
+
+  return api;
 }
 
 // ── Data-attribute auto-init ─────────────────────────────────────────────────
@@ -338,9 +399,10 @@ export function player(container, opts = {}) {
 function autoInit() {
   document.querySelectorAll('[data-holosplat]').forEach(el => {
     if (el._hsPlayer) return;
-    const src  = el.getAttribute('data-holosplat')      || undefined;
-    const anim = el.getAttribute('data-holosplat-anim') || undefined;
-    el._hsPlayer = player(el, { src, animation: anim });
+    const src      = el.getAttribute('data-holosplat')       || undefined;
+    const anim     = el.getAttribute('data-holosplat-anim')  || undefined;
+    const partsDir = el.getAttribute('data-holosplat-parts') || undefined;
+    el._hsPlayer = player(el, { src, animation: anim, partsDir });
   });
 }
 

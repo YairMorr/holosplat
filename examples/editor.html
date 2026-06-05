@@ -100,7 +100,7 @@
     }
 
     /* ── Canvas wrap ── */
-    #canvasWrap { flex: 1; position: relative; overflow: hidden; }
+    #canvasWrap { flex: 1; position: relative; overflow: hidden; background: #000; }
     canvas#viewer { width: 100%; height: 100%; display: block; }
     #paintOverlay {
       position: absolute; inset: 0; pointer-events: none;
@@ -169,7 +169,6 @@
   <h1>HoloSplat Editor</h1>
   <input id="urlInput" type="url" placeholder="http://localhost:8080/scenes/file.ply  (.ply / .splat / .spz)">
   <button class="btn primary" id="loadBtn">Load</button>
-  <label class="row"><input id="flipY" type="checkbox"> Flip&nbsp;Y</label>
   <span id="status">Ready</span>
   <span id="countEl"></span>
 </div>
@@ -190,6 +189,7 @@
     <div class="panel active" id="panel-view">
       <div class="panel-title">Render</div>
       <label class="row"><input id="showGrid" type="checkbox" checked> Grid</label>
+      <label class="row"><input id="flipY" type="checkbox"> Flip Y</label>
       <label class="row">BG <input id="bgColor" type="color" value="#000000"></label>
       <label class="row">
         Scale <input id="splatScale" type="range" min="0.1" max="3" step="0.05" value="1">
@@ -267,8 +267,8 @@
   </div>
 
   <div id="canvasWrap">
-    <canvas id="viewer"></canvas>
     <canvas id="gridCanvas"></canvas>
+    <canvas id="viewer"></canvas>
     <canvas id="gizmoCanvas"></canvas>
     <div id="paintOverlay">
       <div id="brushCursor"></div>
@@ -297,6 +297,7 @@ if (!navigator.gpu) {
 }
 
 // ── Refs ─────────────────────────────────────────────────────────────────────
+const canvasWrap  = document.getElementById('canvasWrap');
 const urlInput    = document.getElementById('urlInput');
 const statusEl    = document.getElementById('status');
 const countEl     = document.getElementById('countEl');
@@ -366,7 +367,7 @@ async function loadScene(url) {
   try {
     viewer = new Viewer({
       canvas,
-      background: document.getElementById('bgColor').value,
+      background: 'transparent',  // grid canvas sits behind; CSS bg handles the colour
       splatScale: parseFloat(document.getElementById('splatScale').value),
       flipY: document.getElementById('flipY').checked,
       onProgress(p) {
@@ -423,13 +424,25 @@ if (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
   urlInput.placeholder = `http://localhost:${location.port || '8080'}/scenes/  (.ply / .splat / .spz)`;
 
 // ── View controls ─────────────────────────────────────────────────────────────
-document.getElementById('bgColor').addEventListener('input', e => viewer?.setBackground(e.target.value));
+document.getElementById('bgColor').addEventListener('input', e => { canvasWrap.style.background = e.target.value; });
 document.getElementById('splatScale').addEventListener('input', e => {
   document.getElementById('scaleVal').textContent = parseFloat(e.target.value).toFixed(2);
   viewer?.setSplatScale(parseFloat(e.target.value));
 });
 document.getElementById('autoRotate').addEventListener('change', e => viewer?.setAutoRotate(e.target.checked));
 document.getElementById('resetBtn').addEventListener('click', () => viewer?.resetCamera());
+document.getElementById('flipY').addEventListener('change', e => {
+  if (!viewer || !srcData) return;
+  viewer.setFlipY(e.target.checked);
+  // Re-sync editor's data copies from the viewer's now-flipped gaussians
+  srcData         = viewer._gaussians.slice();
+  displayData     = srcData.slice();
+  loadedWithFlipY = e.target.checked;
+  selectedMask    = new Uint8Array(numSplats);
+  undoStack       = []; syncUndoBtn();
+  computeBounds(); populateCropInputs();
+  viewer.uploadDisplay(displayData);
+});
 
 // ── Display / highlight ───────────────────────────────────────────────────────
 const HIGHLIGHT = [1.0, 0.35, 0.0]; // orange
@@ -487,56 +500,104 @@ function clipLine(wx0,wy0,wz0, wx1,wy1,wz1, view, proj, w, h) {
   return [...toS(vx0,vy0,vz0), ...toS(vx1,vy1,vz1)];
 }
 
+// Un-project a screen pixel to the world horizontal plane Y=gy.
+// Returns {x, z} world coords, or null if the ray doesn't hit the plane
+// (camera looking away, or intersection too far).
+function unprojectToPlane(sx, sy, view, proj, w, h, gy) {
+  const ndcX = (sx / w) * 2 - 1;
+  const ndcY = 1 - (sy / h) * 2;
+  // View-space ray direction for this pixel
+  const rdx = ndcX / proj[0];
+  const rdy = ndcY / proj[5];
+  const rdz = -1;
+  // Rotate to world space (multiply by R^T of view rotation)
+  const wdx = view[0]*rdx + view[1]*rdy + view[2]*rdz;
+  const wdy = view[4]*rdx + view[5]*rdy + view[6]*rdz;
+  const wdz = view[8]*rdx + view[9]*rdy + view[10]*rdz;
+  // Eye position from view matrix: eye = -R^T * t
+  const ex = -(view[0]*view[12] + view[1]*view[13] + view[2]*view[14]);
+  const ey = -(view[4]*view[12] + view[5]*view[13] + view[6]*view[14]);
+  const ez = -(view[8]*view[12] + view[9]*view[13] + view[10]*view[14]);
+  // Ray–plane intersection (horizontal plane Y = gy)
+  if (Math.abs(wdy) < 1e-6) return null;
+  const t = (gy - ey) / wdy;
+  if (t <= 0 || t > 1e6) return null;
+  return { x: ex + t * wdx, z: ez + t * wdz };
+}
+
 function drawGrid(view, proj, w, h) {
-  // Resize if needed (matches WebGPU canvas physical pixels)
   if (gridCanvas.width !== w || gridCanvas.height !== h) {
     gridCanvas.width = w; gridCanvas.height = h;
   }
   gridCtx.clearRect(0, 0, w, h);
   if (!document.getElementById('showGrid').checked || !viewer) return;
 
-  const cam  = viewer.camera;
-  const r    = cam.radius;
-  const step = Math.pow(10, Math.floor(Math.log10(r * 0.35)));
-  const N    = 10;
-  const ext  = step * N;
-  // Snap grid origin to step grid
-  const ox   = Math.round(cam.target[0] / step) * step;
-  const gy   = cam.target[1];
-  const oz   = Math.round(cam.target[2] / step) * step;
+  const cam = viewer.camera;
+  const gy  = 0;  // grid lives on world Y = 0, always fixed
 
-  gridCtx.lineWidth = 1;
+  // Find the visible extent of the grid plane by un-projecting screen samples.
+  // This makes the grid truly fill the viewport with no sliding or drifting.
+  const samples = [
+    unprojectToPlane(0,   0,   view, proj, w, h, gy),
+    unprojectToPlane(w,   0,   view, proj, w, h, gy),
+    unprojectToPlane(0,   h,   view, proj, w, h, gy),
+    unprojectToPlane(w,   h,   view, proj, w, h, gy),
+    unprojectToPlane(w/2, 0,   view, proj, w, h, gy),
+    unprojectToPlane(w/2, h,   view, proj, w, h, gy),
+    unprojectToPlane(0,   h/2, view, proj, w, h, gy),
+    unprojectToPlane(w,   h/2, view, proj, w, h, gy),
+    unprojectToPlane(w/2, h/2, view, proj, w, h, gy),
+  ].filter(Boolean);
 
-  // Draw lines running along Z (constant X) — center line is the Z-axis (blue)
-  for (let i = -N; i <= N; i++) {
-    const x     = ox + i * step;
-    const major = (i % 5 === 0);
-    const onZ   = (i === 0);
-    const fade  = 1 - Math.abs(i) / (N + 1);
-    const seg   = clipLine(x, gy, oz-ext, x, gy, oz+ext, view, proj, w, h);
+  let xMin, xMax, zMin, zMax;
+  if (samples.length >= 2) {
+    xMin = Math.min(...samples.map(p => p.x));
+    xMax = Math.max(...samples.map(p => p.x));
+    zMin = Math.min(...samples.map(p => p.z));
+    zMax = Math.max(...samples.map(p => p.z));
+  } else {
+    // Camera not looking at the grid plane — fallback to camera-radius extent
+    const r = cam.radius * 2;
+    xMin = cam.target[0] - r; xMax = cam.target[0] + r;
+    zMin = cam.target[2] - r; zMax = cam.target[2] + r;
+  }
+
+  // Step size: based on the visible range so ~8–15 lines always appear
+  const range = Math.max(xMax - xMin, zMax - zMin, cam.radius * 0.1);
+  const step  = Math.pow(10, Math.floor(Math.log10(range * 0.25)));
+
+  // Expand bounds to step-aligned world positions
+  xMin = Math.floor(xMin / step) * step - step;
+  xMax = Math.ceil (xMax / step) * step + step;
+  zMin = Math.floor(zMin / step) * step - step;
+  zMax = Math.ceil (zMax / step) * step + step;
+
+  // Safety cap: never draw more than 100 lines per axis
+  const nx = Math.min(100, Math.round((xMax - xMin) / step) + 1);
+  const nz = Math.min(100, Math.round((zMax - zMin) / step) + 1);
+  xMax = xMin + (nx - 1) * step;
+  zMax = zMin + (nz - 1) * step;
+
+  // Lines along Z (constant X)
+  for (let i = 0; i < nx; i++) {
+    const x   = xMin + i * step;
+    const onZ = Math.abs(x) < step * 0.001;
+    const maj = Math.round(x / step) % 5 === 0;
+    const seg = clipLine(x, gy, zMin, x, gy, zMax, view, proj, w, h);
     if (!seg) continue;
-    gridCtx.strokeStyle = onZ
-      ? `rgba(80,100,255,${(0.75*fade).toFixed(2)})`
-      : major
-        ? `rgba(255,255,255,${(0.22*fade).toFixed(2)})`
-        : `rgba(255,255,255,${(0.09*fade).toFixed(2)})`;
-    gridCtx.lineWidth = onZ ? 1.5 : major ? 1.2 : 1;
+    gridCtx.strokeStyle = onZ ? 'rgba(80,100,255,0.75)' : maj ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)';
+    gridCtx.lineWidth   = onZ ? 1.5 : maj ? 1.2 : 1;
     gridCtx.beginPath(); gridCtx.moveTo(seg[0],seg[1]); gridCtx.lineTo(seg[2],seg[3]); gridCtx.stroke();
   }
-  // Draw lines running along X (constant Z) — center line is the X-axis (red)
-  for (let i = -N; i <= N; i++) {
-    const z     = oz + i * step;
-    const major = (i % 5 === 0);
-    const onX   = (i === 0);
-    const fade  = 1 - Math.abs(i) / (N + 1);
-    const seg   = clipLine(ox-ext, gy, z, ox+ext, gy, z, view, proj, w, h);
+  // Lines along X (constant Z)
+  for (let i = 0; i < nz; i++) {
+    const z   = zMin + i * step;
+    const onX = Math.abs(z) < step * 0.001;
+    const maj = Math.round(z / step) % 5 === 0;
+    const seg = clipLine(xMin, gy, z, xMax, gy, z, view, proj, w, h);
     if (!seg) continue;
-    gridCtx.strokeStyle = onX
-      ? `rgba(255,80,80,${(0.75*fade).toFixed(2)})`
-      : major
-        ? `rgba(255,255,255,${(0.22*fade).toFixed(2)})`
-        : `rgba(255,255,255,${(0.09*fade).toFixed(2)})`;
-    gridCtx.lineWidth = onX ? 1.5 : major ? 1.2 : 1;
+    gridCtx.strokeStyle = onX ? 'rgba(255,80,80,0.75)' : maj ? 'rgba(255,255,255,0.22)' : 'rgba(255,255,255,0.08)';
+    gridCtx.lineWidth   = onX ? 1.5 : maj ? 1.2 : 1;
     gridCtx.beginPath(); gridCtx.moveTo(seg[0],seg[1]); gridCtx.lineTo(seg[2],seg[3]); gridCtx.stroke();
   }
 }
@@ -782,7 +843,6 @@ document.getElementById('resetBounds').addEventListener('click', () => {
 // ── Paint ─────────────────────────────────────────────────────────────────────
 // Events are captured on canvasWrap (parent of canvas) so left-drag paints
 // while right-drag / wheel pass through to the camera unchanged.
-const canvasWrap = document.getElementById('canvasWrap');
 let _paintHandlers = null;
 
 function enterPaint() {

@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Headphones</title>
+  <style>
+    html, body, #scene { margin: 0; width: 100%; height: 100dvh; background: #000; }
+  </style>
+</head>
+<body>
+  <div id="scene"></div>
+  <script type="module">
+    import { player } from '../dist/holosplat.esm.js';
+    player('#scene', {
+      flipY: true,
+      scene: '/scenes/headphones.spz',
+      animation: '/scenes/website.animation.json',
+    });
+  </script>
+</body>
+</html>

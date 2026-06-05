@@ -1,5 +1,5 @@
 """
-HoloSplat — Blender Camera Export Script
+HoloSplat — Blender Camera + Parts Export Script
 ─────────────────────────────────────────
 Exports the active camera animation and callout objects to a JSON file
 readable by the HoloSplat player (HoloSplat.player / data-holosplat-anim).
@@ -12,6 +12,38 @@ HOW TO USE
 4. Press "Run Script".
 
 The output .json file is saved next to your .blend file by default.
+
+ANIMATED PARTS
+──────────────
+To drive separate Gaussian splat models from one animation, parent each GS
+model to an Empty and follow the naming convention:
+
+    [prefix].[splat-name][.suffix]
+
+The Empty's full name becomes the animation object ID; the splat file to load
+is derived from the middle segment (splat-name). Examples:
+
+    ctrl.fork-left       →  id "ctrl.fork-left",  loads fork-left.spz
+    ctrl.fork-left.001   →  id "ctrl.fork-left.001", loads fork-left.spz
+    fork-left            →  id "fork-left",        loads fork-left.spz
+
+Prefix (e.g. "ctrl") and suffix (e.g. ".001") are optional. The splat file
+extension (.spz / .ply / .splat) doesn't matter — HoloSplat detects it at
+load time.
+
+Place the Empties in a collection named "HoloSplat Parts":
+    ctrl.fork-left    →  id "ctrl.fork-left"
+    ctrl.fork-right   →  id "ctrl.fork-right"
+
+Alternatively, prefix Empty names with "hs-part." (still supported):
+    hs-part.fork-left  →  id "hs-part.fork-left"  (splat name: "fork-left")
+
+Animate the Empties. The script exports their world transform (position +
+rotation) per frame. At runtime HoloSplat applies each Empty's transform to
+the corresponding splat model.
+
+Important: apply any scale on the Empties (Ctrl+A → Scale) before exporting,
+and ensure GS_OBJECT_NAME is set so coordinate spaces align correctly.
 
 CALLOUT OBJECTS
 ───────────────
@@ -79,7 +111,7 @@ FLIP_Y = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 
-import bpy, json, math
+import bpy, json, math, mathutils
 from pathlib import Path
 
 scene = bpy.context.scene
@@ -180,6 +212,52 @@ for name, obj in callout_objects.items():
 
 print(f"HoloSplat: found {len(callouts)} callout(s): {[c['id'] for c in callouts]}")
 
+# ── Collect part objects ──────────────────────────────────────────────────────
+# "HoloSplat Parts" collection  OR  objects named "hs-part.<id>"
+part_objects = {}   # id → object (deduped, insertion-ordered)
+
+if "HoloSplat Parts" in bpy.data.collections:
+    for obj in bpy.data.collections["HoloSplat Parts"].all_objects:
+        if obj.type == 'EMPTY':
+            part_objects[obj.name] = obj
+
+for obj in scene.objects:
+    if obj.type == 'EMPTY' and obj.name.startswith("hs-part."):
+        part_objects[obj.name] = obj
+
+print(f"HoloSplat: found {len(part_objects)} part(s): {list(part_objects.keys())}")
+
+# Quaternion for Blender → HoloSplat axis conversion (Rx −90°)
+# Used only when GS_OBJECT_NAME is None (no gs_inv path).
+Q_BL_TO_HS = mathutils.Euler((-math.pi / 2, 0, 0)).to_quaternion()
+# 4×4 rotation matrix equivalent (used for full-matrix coordinate changes)
+_R_BL_TO_HS = Q_BL_TO_HS.to_matrix().to_4x4()
+
+# ── Bind-pose (rest) matrices — recorded at f_start ──────────────────────────
+# Parts are exported as RELATIVE transforms (current × rest⁻¹) so that at
+# f_start the transform is identity and the splat data stays in place.
+scene.frame_set(f_start)
+_part_rest_mats = {}
+for _pid, _obj in part_objects.items():
+    if gs_inv:
+        _part_rest_mats[_pid] = (gs_inv @ _obj.matrix_world).copy()
+    else:
+        _part_rest_mats[_pid] = (_R_BL_TO_HS @ _obj.matrix_world @ _R_BL_TO_HS.inverted()).copy()
+
+def transform_part(obj, pid):
+    """Return (pos_list, quat_xyzw) as the delta from the bind pose at f_start."""
+    if gs_inv:
+        curr = gs_inv @ obj.matrix_world
+    else:
+        curr = _R_BL_TO_HS @ obj.matrix_world @ _R_BL_TO_HS.inverted()
+    rel = curr @ _part_rest_mats[pid].inverted()
+    p   = rel.translation
+    q   = rel.to_quaternion()   # Blender (w,x,y,z)
+    return [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]
+
+# Pre-allocate per-part frame lists
+part_frame_data = {pid: [] for pid in part_objects}
+
 # ── Export camera per frame ───────────────────────────────────────────────────
 saved_frame = scene.frame_current
 frames_flat = []
@@ -190,11 +268,8 @@ for f in range(f_start, f_end + 1):
     mw = cam_obj.matrix_world
 
     if gs_inv:
-        # Transform camera into GS object's local space (= splat file coordinate system)
-        # This undoes the rotation/scale the import addon applied to the GS object,
-        # so the exported positions match the actual vertex positions in the file.
         local_pos = gs_inv @ mw.translation
-        fwd_world = -mw.col[2].xyz          # camera looks in its local -Z direction
+        fwd_world = -mw.col[2].xyz
         local_fwd = (gs_inv.to_3x3() @ fwd_world).normalized()
         eye     = [local_pos.x, local_pos.y, local_pos.z]
         forward = normalize([local_fwd.x, local_fwd.y, local_fwd.z])
@@ -206,10 +281,32 @@ for f in range(f_start, f_end + 1):
 
     frames_flat.extend([round(x, 6) for x in eye + forward])
 
+    # Part transforms at this frame
+    for pid, obj in part_objects.items():
+        pos_hs, quat_xyzw = transform_part(obj, pid)
+        part_frame_data[pid].extend(
+            [round(x, 6) for x in pos_hs + quat_xyzw]
+        )
+
 scene.frame_set(saved_frame)   # restore original frame
 
 frame_count = f_end - f_start + 1
 print(f"HoloSplat: exported {frame_count} frames at {fps} fps  (duration {frame_count/fps:.2f}s)")
+
+# ── Focal point (orbit anchor for the free-camera mode) ──────────────────────
+# Place an Empty named "focal-point" (or "hs-focal-point") in the scene to
+# pin the camera's orbit target when hs-free / hs-h* / hs-v* markers are active.
+focal_point = None
+for obj in scene.objects:
+    if obj.name in ("focal-point", "hs-focal-point") and obj.type == 'EMPTY':
+        wp = obj.matrix_world.translation
+        if gs_inv:
+            lp = gs_inv @ wp
+            focal_point = [round(lp.x, 6), round(lp.y, 6), round(lp.z, 6)]
+        else:
+            focal_point = [round(x, 6) for x in bl_to_hs(wp)]
+        print(f"HoloSplat: focal point '{obj.name}' → {focal_point}")
+        break
 
 # ── Apply FLIP_Y (180° X rotation: negate Y and Z) ───────────────────────────
 if FLIP_Y:
@@ -222,7 +319,21 @@ if FLIP_Y:
     for c in callouts:
         c["pos"][1] = -c["pos"][1]
         c["pos"][2] = -c["pos"][2]
-    print("HoloSplat: FLIP_Y applied to camera and callout positions")
+    # Part transforms: negate py/pz; quaternion (x,y,z,w) → (w,-z,y,-x)
+    for frames in part_frame_data.values():
+        for i in range(frame_count):
+            b = i * 7
+            frames[b + 1] = -frames[b + 1]   # py
+            frames[b + 2] = -frames[b + 2]   # pz
+            qx, qy, qz, qw = frames[b+3], frames[b+4], frames[b+5], frames[b+6]
+            frames[b+3] = qw
+            frames[b+4] = -qz
+            frames[b+5] = qy
+            frames[b+6] = -qx
+    if focal_point:
+        focal_point[1] = -focal_point[1]
+        focal_point[2] = -focal_point[2]
+    print("HoloSplat: FLIP_Y applied to camera, callouts, and part transforms")
 
 # ── Export timeline markers ───────────────────────────────────────────────────
 # Blender timeline markers (added with M in the Timeline/Dopesheet editor) are
@@ -242,16 +353,23 @@ for marker in sorted(scene.timeline_markers, key=lambda m: m.frame):
 print(f"HoloSplat: exported {len(markers)} marker(s): {list(markers.keys())}")
 
 # ── Write JSON ────────────────────────────────────────────────────────────────
+objects_out = [
+    {"id": pid, "frames": frames}
+    for pid, frames in part_frame_data.items()
+]
+
 data = {
-    "version"    : 1,
+    "version"    : 2 if objects_out else 1,
     "fps"        : fps,
     "frameCount" : frame_count,
     "fov"        : fov_deg,
     "near"       : round(clip_near, 6),
     "far"        : round(clip_far,  6),
     "frames"     : frames_flat,
+    "objects"    : objects_out,
     "callouts"   : callouts,
     "markers"    : markers,
+    "focalPoint" : focal_point,
 }
 
 out_dir  = bpy.path.abspath(OUTPUT_PATH)

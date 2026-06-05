@@ -20,6 +20,13 @@ export class OrbitCamera {
     this.enabled    = true;
     this.panEnabled = true;
 
+    // Angular constraints (radians). null = unconstrained.
+    // Set by constrainAngles(); cleared by clearConstraints().
+    this.thetaMin = null;
+    this.thetaMax = null;
+    this.phiMin   = null;
+    this.phiMax   = null;
+
     this._drag    = null;      // { x, y, button }
     this._touches = [];
 
@@ -146,6 +153,41 @@ export class OrbitCamera {
     const speed = 0.005;
     this.theta -= dx * speed;
     this.phi    = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.phi + dy * speed));
+    if (this.thetaMin !== null) this.theta = Math.max(this.thetaMin, this.theta);
+    if (this.thetaMax !== null) this.theta = Math.min(this.thetaMax, this.theta);
+    if (this.phiMin   !== null) this.phi   = Math.max(this.phiMin,   this.phi);
+    if (this.phiMax   !== null) this.phi   = Math.min(this.phiMax,   this.phi);
+  }
+
+  /**
+   * Restrict orbit to ±hDeg horizontal and ±vDeg vertical from the current
+   * theta/phi. Call after setFromLookAt() so the current angles are the center.
+   * Pass null for either axis to leave it unconstrained.
+   */
+  constrainAngles(hDeg, vDeg) {
+    if (hDeg !== null) {
+      const r = hDeg * Math.PI / 180;
+      this.thetaMin = this.theta - r;
+      this.thetaMax = this.theta + r;
+    } else {
+      this.thetaMin = null;
+      this.thetaMax = null;
+    }
+    if (vDeg !== null) {
+      const r = vDeg * Math.PI / 180;
+      this.phiMin = Math.max(-Math.PI / 2 + 0.01, this.phi - r);
+      this.phiMax = Math.min( Math.PI / 2 - 0.01, this.phi + r);
+    } else {
+      this.phiMin = null;
+      this.phiMax = null;
+    }
+  }
+
+  clearConstraints() {
+    this.thetaMin = null;
+    this.thetaMax = null;
+    this.phiMin   = null;
+    this.phiMax   = null;
   }
 
   _pan(dx, dy) {
@@ -207,8 +249,19 @@ export class OrbitCamera {
     this.theta  = Math.atan2(dx, dz);
   }
 
-  /** Fit camera to a scene bounding box. */
+  /** Fit camera to a scene bounding box, resetting angle to default. */
   fitScene(positions, numSplats) {
+    this._sceneBounds(positions, numSplats);
+    this.theta = 0;
+    this.phi   = 0.2;
+  }
+
+  /** Fit camera to a scene bounding box, preserving current angle. */
+  focusScene(positions, numSplats) {
+    this._sceneBounds(positions, numSplats);
+  }
+
+  _sceneBounds(positions, numSplats) {
     let minX = Infinity, minY = Infinity, minZ = Infinity;
     let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
     for (let i = 0; i < numSplats; i++) {
@@ -224,9 +277,7 @@ export class OrbitCamera {
       (minZ + maxZ) * 0.5,
     ];
     const extent = Math.max(maxX - minX, maxY - minY, maxZ - minZ) * 0.5;
-    this.radius = extent / Math.tan(this.fov * 0.5) * 1.2;
-    this.theta  = 0;
-    this.phi    = 0.2;
+    this.radius  = extent / Math.tan(this.fov * 0.5) * 1.2;
   }
 }
 

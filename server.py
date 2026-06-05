@@ -95,8 +95,15 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         with open(path, 'rb') as f:
             body = f.read()
+        ext = os.path.splitext(rel)[1].lower()
+        ct = {
+            '.json': 'application/json',
+            '.html': 'text/html; charset=utf-8',
+            '.js':   'text/javascript; charset=utf-8',
+            '.css':  'text/css; charset=utf-8',
+        }.get(ext, 'text/plain; charset=utf-8')
         self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Type', ct)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -175,7 +182,7 @@ print()
 print('  Press Ctrl+C to stop.')
 print()
 
-with http.server.HTTPServer(('', PORT), Handler) as httpd:
+with http.server.ThreadingHTTPServer(('', PORT), Handler) as httpd:
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

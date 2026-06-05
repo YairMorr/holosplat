@@ -29,9 +29,10 @@ export class Renderer {
     this.bindGroup  = null;
 
     // GPU buffers
-    this._uniformBuf  = null;
-    this._gaussianBuf = null;
-    this._orderBuf    = null;
+    this._uniformBuf   = null;
+    this._gaussianBuf  = null;
+    this._orderBuf     = null;
+    this._transformBuf = null;
 
     // CPU-side uniform data
     this._uniforms = new Float32Array(U_SIZE);
@@ -64,6 +65,11 @@ export class Renderer {
     this._createPipeline();
     this._uniformBuf = this._createBuffer(U_SIZE * 4,
       GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+
+    // Default transforms buffer: one identity mat4 (single-part scenes)
+    const identity = new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]);
+    this._transformBuf = this._createBuffer(64, GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST);
+    this.device.queue.writeBuffer(this._transformBuf, 0, identity);
   }
 
   // ── Upload scene data (call once after load) ───────────────────────────────
@@ -110,6 +116,35 @@ export class Renderer {
     );
   }
 
+  /** Upload a new transforms buffer (array of Float32Array(16), one mat4 per part).
+   *  Rebuilds the bind group — call once after uploadGaussians. */
+  uploadTransforms(transforms) {
+    const flat = new Float32Array(transforms.length * 16);
+    for (let i = 0; i < transforms.length; i++) flat.set(transforms[i], i * 16);
+    if (this._transformBuf) this._transformBuf.destroy();
+    this._transformBuf = this._createBuffer(
+      flat.byteLength,
+      GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST
+    );
+    this.device.queue.writeBuffer(this._transformBuf, 0, flat);
+    if (this._gaussianBuf) this._rebuildBindGroup();
+  }
+
+  /** Write updated transform data each frame without reallocating (transforms array must
+   *  be the same length as the last uploadTransforms call). */
+  updateTransforms(flat) {
+    if (this._transformBuf) this.device.queue.writeBuffer(this._transformBuf, 0, flat);
+  }
+
+  /** Patch a region of the Gaussian buffer in-place (no reallocation).
+   *  Used for progressive streaming: call after uploadGaussians to fill in chunks.
+   *  @param {Float32Array} data          chunk of decoded splats (n × 16 floats)
+   *  @param {number}       vertexOffset  first vertex index to overwrite */
+  patchGaussians(data, vertexOffset) {
+    if (!this._gaussianBuf) return;
+    this.device.queue.writeBuffer(this._gaussianBuf, vertexOffset * 64, data);
+  }
+
   setSplatScale(s) {
     this._uniforms[U_PARAMS] = s;
   }
@@ -147,6 +182,7 @@ export class Renderer {
     this._uniformBuf?.destroy();
     this._gaussianBuf?.destroy();
     this._orderBuf?.destroy();
+    this._transformBuf?.destroy();
     this.context?.unconfigure();
   }
 
@@ -182,9 +218,10 @@ export class Renderer {
     this.bindGroup = this.device.createBindGroup({
       layout: this.pipeline.getBindGroupLayout(0),
       entries: [
-        { binding: 0, resource: { buffer: this._uniformBuf  } },
-        { binding: 1, resource: { buffer: this._gaussianBuf } },
-        { binding: 2, resource: { buffer: this._orderBuf    } },
+        { binding: 0, resource: { buffer: this._uniformBuf   } },
+        { binding: 1, resource: { buffer: this._gaussianBuf  } },
+        { binding: 2, resource: { buffer: this._orderBuf     } },
+        { binding: 3, resource: { buffer: this._transformBuf } },
       ],
     });
   }

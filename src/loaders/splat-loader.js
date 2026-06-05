@@ -15,6 +15,8 @@
  *   [11]   0 (padding)
  *   [12-15] quat.xyzw
  */
+import { fetchWithProgress } from './fetch-utils.js';
+
 export async function loadSplat(url, onProgress) {
   const buffer = await fetchWithProgress(url, onProgress);
   return parseSplat(buffer);

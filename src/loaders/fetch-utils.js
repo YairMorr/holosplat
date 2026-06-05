@@ -2,7 +2,7 @@
  * Shared fetch helper used by all loaders.
  * Streams the response body so onProgress(0..1) can be reported.
  */
-async function fetchWithProgress(url, onProgress) {
+export async function fetchWithProgress(url, onProgress) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} loading ${url}`);
 

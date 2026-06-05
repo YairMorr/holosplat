@@ -24,6 +24,8 @@
  *         the HoloSplat renderer — see shaders.js for the GPU-side layout.
  */
 
+import { fetchWithProgress } from './fetch-utils.js';
+
 const MAGIC    = 0x5053474E;
 const SQRT2INV = 1 / Math.SQRT2;
 

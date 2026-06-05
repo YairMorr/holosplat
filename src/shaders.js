@@ -3,11 +3,15 @@
 // GPU layout (must match CPU Float32Array layout in loaders):
 //
 //   struct Gaussian {         byte offset
-//     pos   : vec3<f32>,   //  0  (12 bytes + 4 implicit WGSL padding = 16)
-//     color : vec4<f32>,   // 16  (rgba, premultiplied ready)
+//     pos   : vec3<f32>,   //  0  (12 bytes)
+//     part  : f32,         // 12  (part/object index, stored as float 0.0/1.0/2.0…)
+//     color : vec4<f32>,   // 16  (rgba)
 //     scale : vec3<f32>,   // 32  (12 bytes + 4 implicit padding = 16)
 //     quat  : vec4<f32>,   // 48  (xyzw)
 //   }; // stride = 64 bytes = 16 floats/gaussian
+//
+// Binding 3: per-part model-space → world-space transforms (col-major mat4, one per part).
+// For single-part scenes part=0 and transforms[0] is the identity matrix.
 //
 // Uniform layout (160 bytes = 40 floats):
 //   [0-15]  view matrix (col-major)
@@ -29,14 +33,16 @@ struct Uniforms {
 
 struct Gaussian {
   pos   : vec3<f32>,
+  part  : f32,             // part index (0.0, 1.0, 2.0…) — cast to u32 in shader
   color : vec4<f32>,
   scale : vec3<f32>,
   quat  : vec4<f32>,
 };
 
-@group(0) @binding(0) var<uniform>       uniforms  : Uniforms;
-@group(0) @binding(1) var<storage, read> gaussians : array<Gaussian>;
-@group(0) @binding(2) var<storage, read> order     : array<u32>;
+@group(0) @binding(0) var<uniform>       uniforms   : Uniforms;
+@group(0) @binding(1) var<storage, read> gaussians  : array<Gaussian>;
+@group(0) @binding(2) var<storage, read> order      : array<u32>;
+@group(0) @binding(3) var<storage, read> transforms : array<mat4x4<f32>>;
 
 struct VOut {
   @builtin(position) clipPos : vec4<f32>,
@@ -80,8 +86,9 @@ fn vs_main(
   let g  = gaussians[gi];
   let corner = corners[vi];
 
-  // ── Transform to view space ──────────────────────────────────────────────
-  let viewPos4 = uniforms.view * vec4<f32>(g.pos, 1.0);
+  // ── Part transform: local → world → view ────────────────────────────────
+  let partMat  = transforms[u32(g.part)];
+  let viewPos4 = uniforms.view * (partMat * vec4<f32>(g.pos, 1.0));
   let t = viewPos4.xyz;
 
   // Discard if at or behind near plane
@@ -111,14 +118,13 @@ fn vs_main(
     vec3<f32>(0.0,          fy / (-t.z),   0.0),
     vec3<f32>(fx*t.x / tz2, fy*t.y / tz2, 0.0)
   );
-  // View rotation (upper-left 3×3 of view matrix, column-major)
-  let W = mat3x3<f32>(
-    uniforms.view[0].xyz,
-    uniforms.view[1].xyz,
-    uniforms.view[2].xyz
-  );
-  let T    = J * W;
-  let cov2 = T * cov3 * transpose(T);
+  // Combined rotation: view × part — maps splat-local covariance to view space.
+  // For single-part (identity partMat) this reduces to just the view rotation.
+  let R_part = mat3x3<f32>(partMat[0].xyz, partMat[1].xyz, partMat[2].xyz);
+  let W_view = mat3x3<f32>(uniforms.view[0].xyz, uniforms.view[1].xyz, uniforms.view[2].xyz);
+  let W      = W_view * R_part;
+  let T      = J * W;
+  let cov2   = T * cov3 * transpose(T);
 
   // Extract 2×2 + low-pass filter (anti-aliasing)
   let a = cov2[0][0] + 0.3;   // Σ_xx  (cov2[col][row])
@@ -164,7 +170,6 @@ fn fs_main(in: VOut) -> @location(0) vec4<f32> {
   if power > 0.0 { discard; }
   let alpha = in.color.a * exp(power);
   if alpha < 1.0/255.0 { discard; }
-  // Premultiplied alpha output (blend: src=ONE, dst=ONE_MINUS_SRC_ALPHA)
   return vec4<f32>(in.color.rgb * alpha, alpha);
 }
 `;

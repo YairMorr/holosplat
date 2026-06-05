@@ -26,6 +26,24 @@
  * from Blender's Z-up space automatically.
  */
 
+/**
+ * Extract the splat file stem from a Blender empty name.
+ * Convention: [prefix.]splat-name[.suffix]
+ * Takes the last dot-separated segment, skipping trailing Blender
+ * duplicate counters (all-digit segments like "001").
+ *   "fork-left"               → "fork-left"
+ *   "ctrl.fork-left"          → "fork-left"
+ *   "ctrl.fork-left.001"      → "fork-left"
+ *   "hs-part.ctrl.fork-left"  → "fork-left"
+ */
+export function splatNameFromId(id) {
+  const parts = id.split('.');
+  for (let i = parts.length - 1; i >= 0; i--) {
+    if (!/^\d+$/.test(parts[i])) return parts[i];
+  }
+  return parts[0];
+}
+
 export class Animation {
   /**
    * @param {object} data  Parsed JSON from export_holosplat.py
@@ -41,6 +59,7 @@ export class Animation {
     this.near       = data.near       ?? null;   // null = keep player near
     this.far        = data.far        ?? null;   // null = keep player far
     this.callouts   = data.callouts   ?? [];
+    this.focalPoint = data.focalPoint ?? null;
     this.loop       = true;
 
     // Named timeline markers: { markerName: frameNumber }
@@ -54,6 +73,12 @@ export class Animation {
     // Typed array: 6 floats per frame [ex ey ez fx fy fz]
     this._frames  = new Float32Array(data.frames);
 
+    // Per-object animated transforms: 7 floats per frame [px py pz qx qy qz qw]
+    this._objects = (data.objects ?? []).map(obj => ({
+      id:     obj.id,
+      frames: new Float32Array(obj.frames),
+    }));
+
     this._time    = 0;
     this._playing = true;
   }
@@ -63,6 +88,8 @@ export class Animation {
   get duration() { return this.frameCount / this.fps; }
   get time()     { return this._time; }
   get playing()  { return this._playing; }
+  /** Array of tracked objects: [{ id, frames }]. Empty for v1 animations. */
+  get objects()  { return this._objects; }
 
   // ── Playback control ────────────────────────────────────────────────────────
 
@@ -96,6 +123,23 @@ export class Animation {
   }
 
   // ── Camera frame ────────────────────────────────────────────────────────────
+
+  /**
+   * Returns [{ id, pos:[x,y,z], quat:[x,y,z,w] }] for every tracked object at
+   * the current playback time. Empty array for v1 animations with no objects.
+   */
+  getObjectFrames() {
+    const frame = Math.min(Math.floor(this._time * this.fps), this.frameCount - 1);
+    return this._objects.map(obj => {
+      const i = frame * 7;
+      const f = obj.frames;
+      return {
+        id:   obj.id,
+        pos:  [f[i],     f[i + 1], f[i + 2]],
+        quat: [f[i + 3], f[i + 4], f[i + 5], f[i + 6]],
+      };
+    });
+  }
 
   /**
    * Returns { eye, target } arrays for the current playback time.

@@ -37,14 +37,14 @@
  */
 import { Viewer } from './viewer.js';
 import { player } from './player.js';
-import { Animation, loadAnimation } from './animation.js';
+import { Animation, loadAnimation, splatNameFromId } from './animation.js';
 import { scrollScene } from './scroll-scene.js';
 import { compressToSpz, encodeSpz } from './compress.js';
 import { parseSplat } from './loaders/splat-loader.js';
 import { parsePly } from './loaders/ply-loader.js';
 
 export async function create(options = {}) {
-  const { onLoad, onError, src, ...viewerOpts } = options;
+  const { onLoad, onError, src, parts, ...viewerOpts } = options;
 
   const viewer = new Viewer({ ...viewerOpts });
 
@@ -55,7 +55,8 @@ export async function create(options = {}) {
 
   try {
     await viewer.init();
-    if (src) await viewer.load(src);
+    if (parts)     await viewer.loadParts(parts);
+    else if (src)  await viewer.load(src);
   } catch (err) {
     viewer.destroy();
     if (onError) { onError(err); return noop; }
@@ -77,4 +78,4 @@ export async function create(options = {}) {
 }
 
 // Also expose Viewer class, animation, scroll scene, parsers, and compression utilities
-export { Viewer, player, scrollScene, Animation, loadAnimation, compressToSpz, encodeSpz, parseSplat, parsePly };
+export { Viewer, player, scrollScene, Animation, loadAnimation, splatNameFromId, compressToSpz, encodeSpz, parseSplat, parsePly };
