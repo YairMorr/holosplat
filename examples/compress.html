@@ -45,11 +45,29 @@
       border: 2px solid #444; border-top-color: #3a7aff;
       border-radius: 50%; animation: spin .6s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
+    a.x-link { color: #5a9aff; text-decoration: none; font-size: 0.78rem; }
+    a.x-link:hover { text-decoration: underline; }
+    #saveDirRow { width: 100%; max-width: 520px; display: flex; align-items: center; gap: 8px; }
+    #saveDirRow label { font-size: 0.78rem; color: #888; white-space: nowrap; }
+    #saveDir {
+      flex: 1; background: #1a1a1a; border: 1px solid #333; border-radius: 4px;
+      color: #ddd; font-size: 0.82rem; padding: 6px 8px;
+    }
+    #saveDir:focus { outline: none; border-color: #3a7aff; }
+    .result .sizes .saved  { color: #5a5; font-weight: 600; }
+    .result .sizes .saving { color: #888; }
   </style>
 </head>
 <body>
   <h1>HoloSplat — Compress to .spz</h1>
   <p>Drop <strong>.splat</strong> or <strong>.ply</strong> files here to compress them to the gzip-packed <strong>.spz</strong> format.</p>
+  <a class="x-link" href="prune.html">→ Want to reduce splat count too? Use the Prune & LOD tool</a>
+  <a class="x-link" href="pack.html">→ Have multiple color variants of the same model? Use the Pack Variants tool</a>
+
+  <div id="saveDirRow">
+    <label for="saveDir">Save to folder</label>
+    <input id="saveDir" type="text" placeholder="scenes/headphones (relative to project root) — leave empty to download instead" spellcheck="false">
+  </div>
 
   <div id="dropzone">
     <strong>Drop files here</strong>
@@ -67,6 +85,14 @@
     const dropzone  = document.getElementById('dropzone');
     const fileInput = document.getElementById('fileInput');
     const results   = document.getElementById('results');
+    const saveDirEl = document.getElementById('saveDir');
+
+    // Remembered across reloads — you're usually compressing a batch from
+    // the same scene folder.
+    saveDirEl.value = localStorage.getItem('holosplat:compress:saveDir') || '';
+    saveDirEl.addEventListener('change', () => {
+      localStorage.setItem('holosplat:compress:saveDir', saveDirEl.value.trim());
+    });
 
     // ── Drop / click wiring ───────────────────────────────────────────────────
     dropzone.addEventListener('click', () => fileInput.click());
@@ -91,13 +117,51 @@
         const row = addResult(file.name, file.size, null, null, true);
         try {
           const buf     = await file.arrayBuffer();
-          const parsed  = ext === 'ply' ? parsePly(buf) : parseSplat(buf);
-          const spzBuf  = await compressToSpz(parsed.data, parsed.count);
+          // Request full SH (degree 3) from .ply sources so it round-trips
+          // into the .spz output — .splat files don't carry SH at all.
+          const parsed  = ext === 'ply' ? parsePly(buf, 3) : parseSplat(buf);
+          const spzBuf  = await compressToSpz(parsed.data, parsed.count, {
+            shData: parsed.shData, numSHBases: parsed.numSHBases,
+          });
           const outName = file.name.replace(/\.(splat|ply)$/i, '.spz');
-          updateResult(row, file.size, spzBuf.byteLength, outName, spzBuf);
+          const saveDir = saveDirEl.value.trim();
+          if (saveDir) {
+            row.querySelector('.sizes').innerHTML = `${renderSizes(file.size, spzBuf.byteLength)} · <span class="saving"><span class="spinner"></span> saving…</span>`;
+            await saveToServer(row, `${saveDir.replace(/\/+$/, '')}/${outName}`, file.size, spzBuf);
+          } else {
+            updateResult(row, file.size, spzBuf.byteLength, outName, spzBuf);
+          }
         } catch (err) {
           updateResult(row, file.size, null, null, null, err.message);
         }
+      }
+    }
+
+    // PUT to the dev server's /hs-api/file route (see src/server.js /
+    // server.py) — writes anywhere under the project root, creating
+    // directories as needed. Requires the page to be served by
+    // server.py or a Node server mounting createHsApiHandler(); falls
+    // back to a download if the request fails (e.g. a plain static
+    // file server with no /hs-api routes).
+    async function saveToServer(row, relPath, origSize, spzBuf) {
+      try {
+        const res = await fetch(`/hs-api/file?path=${encodeURIComponent(relPath)}`, {
+          method: 'PUT',
+          body: spzBuf,
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        row.className = 'result';
+        row.querySelector('.sizes').innerHTML =
+          `${renderSizes(origSize, spzBuf.byteLength)} · <span class="saved">✓ saved to ${relPath}</span>`;
+      } catch (err) {
+        row.className = 'result error';
+        row.querySelector('.sizes').innerHTML =
+          `<span class="err">save failed (${err.message}) — is the dev server running?</span>`;
+        const btn = document.createElement('button');
+        btn.className = 'dl';
+        btn.textContent = 'Download instead';
+        btn.addEventListener('click', () => triggerDownload(relPath.slice(relPath.lastIndexOf('/') + 1), spzBuf));
+        row.appendChild(btn);
       }
     }
 

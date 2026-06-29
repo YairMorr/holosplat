@@ -51,6 +51,9 @@ export async function compressToSpz(data, count, opts = {}) {
  * @param {number}       count
  * @param {object}       [opts]
  * @param {number}       [opts.fractionalBits]
+ * @param {Float32Array} [opts.shData]      – SH-rest coefficients, canonical
+ *   layout (gi*numBases+basis)*3+channel — see ply-loader.js. Omit for DC-only.
+ * @param {number}       [opts.numSHBases]  – 3/8/15 for SH degree 1/2/3
  * @returns {Uint8Array}
  */
 export function encodeSpz(data, count, opts = {}) {
@@ -72,9 +75,16 @@ export function encodeSpz(data, count, opts = {}) {
       : 12;
   }
 
+  // ── SH-rest (optional) ────────────────────────────────────────────────────
+  // numBases 3/8/15 → degree 1/2/3 (matches dimForDegree in the reference
+  // niantic-labs/spz encoder — see also degreeForDim).
+  const { shData, numSHBases = 0 } = opts;
+  const shDegree = numSHBases >= 15 ? 3 : numSHBases >= 8 ? 2 : numSHBases >= 3 ? 1 : 0;
+  const shBytesPerPoint = numSHBases * 3;
+
   // ── Allocate buffer ───────────────────────────────────────────────────────
   const HEADER = 16;
-  const total  = HEADER + count * (9 + 1 + 3 + 3 + 4);
+  const total  = HEADER + count * (9 + 1 + 3 + 3 + 4 + shBytesPerPoint);
   const buf    = new ArrayBuffer(total);
   const view   = new DataView(buf);
   const u8     = new Uint8Array(buf);
@@ -83,7 +93,7 @@ export function encodeSpz(data, count, opts = {}) {
   view.setUint32( 0, SPZ_MAGIC,       true);
   view.setUint32( 4, SPZ_VERSION,     true);
   view.setUint32( 8, count,           true);
-  view.setUint8 (12, 0);                    // shDegree
+  view.setUint8 (12, shDegree);
   view.setUint8 (13, fractionalBits);
   view.setUint8 (14, 0);                    // flags
   view.setUint8 (15, 0);                    // reserved
@@ -94,6 +104,7 @@ export function encodeSpz(data, count, opts = {}) {
   const offColor = offAlpha + count * 1;
   const offScale = offColor + count * 3;
   const offRot   = offScale + count * 3;
+  const offSH    = offRot   + count * 4;
 
   const posScale = 1 << fractionalBits;
 
@@ -123,6 +134,17 @@ export function encodeSpz(data, count, opts = {}) {
     view.setUint32(offRot + i * 4,
       encodeQuat(data[d + 12], data[d + 13], data[d + 14], data[d + 15]),
       true);
+
+    // SH-rest: basis-major, RGB-interleaved (matches the reference
+    // niantic-labs/spz layout exactly, so no reordering is needed — see
+    // encodeSH). shData uses the same layout already (ply-loader.js).
+    if (shData && numSHBases > 0) {
+      const sBase = i * shBytesPerPoint;
+      const dBase = i * numSHBases * 3;
+      for (let k = 0; k < shBytesPerPoint; k++) {
+        u8[offSH + sBase + k] = encodeSH(shData[dBase + k]);
+      }
+    }
   }
 
   return u8;
@@ -130,19 +152,25 @@ export function encodeSpz(data, count, opts = {}) {
 
 // ── Encoding helpers ──────────────────────────────────────────────────────────
 
-function writeInt24(view, offset, value) {
+export function writeInt24(view, offset, value) {
   const v = Math.max(-8388608, Math.min(8388607, Math.round(value)));
   view.setUint8(offset,     v & 0xFF);
   view.setUint8(offset + 1, (v >>  8) & 0xFF);
   view.setUint8(offset + 2, (v >> 16) & 0xFF);
 }
 
-function clampU8(v) {
+export function clampU8(v) {
   return Math.max(0, Math.min(255, Math.round(v)));
 }
 
-function encodeScale(linear) {
+export function encodeScale(linear) {
   return clampU8(Math.log(Math.max(1e-9, linear)) * 16 + 128);
+}
+
+/** Inverse of decodeSH (spz-loader.js): matches the reference
+ *  niantic-labs/spz quantizeSH/unquantizeSH formula exactly. */
+export function encodeSH(x) {
+  return clampU8(Math.round(x * 128) + 128);
 }
 
 /**
@@ -158,7 +186,7 @@ function encodeScale(linear) {
  *   bits [21:12]  b
  *   bits [31:22]  c
  */
-function encodeQuat(qx, qy, qz, qw) {
+export function encodeQuat(qx, qy, qz, qw) {
   // Normalize
   const len = Math.hypot(qx, qy, qz, qw) || 1;
   const q = [qx / len, qy / len, qz / len, qw / len];
@@ -194,7 +222,7 @@ function encodeQuat(qx, qy, qz, qw) {
 
 // ── Gzip compression ──────────────────────────────────────────────────────────
 
-async function compressGzip(data) {
+export async function compressGzip(data) {
   if (typeof CompressionStream === 'undefined') {
     throw new Error('CompressionStream API is not available in this environment');
   }

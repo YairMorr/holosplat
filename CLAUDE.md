@@ -23,6 +23,8 @@ Source lives in `src/`. Entry point is `src/index.js`. Bundle target is browser 
 | `src/animation.js` | `Animation` — parses Blender JSON, seekFrame, tick |
 | `src/server.js` | `createHsApiHandler()` — Express/Vite/Next.js middleware for editor API |
 | `holosplat/index.html` | Art-direction editor UI (served at `/holosplat/`, never deployed) |
+| `holosplat/editor.js` | Desktop `?hs` overlay — art-direction editor |
+| `holosplat/stats.js` | Mobile/touch `?hs` overlay — lightweight fps/splat-count/SH/scene readout |
 | `bin/holosplat.cjs` | `npx holosplat init` CLI |
 | `server.py` | Python dev server (adds `/hs-api` routes for the editor) |
 

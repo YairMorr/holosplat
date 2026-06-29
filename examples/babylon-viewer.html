@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Babylon.js – Gaussian Splatting LOD Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      color: #eee;
+      font-family: system-ui, sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    #toolbar h1 { font-size: 1rem; font-weight: 600; color: #fff; margin-right: 4px; }
+    #toolbar label { font-size: 0.8rem; color: #999; display: flex; align-items: center; gap: 6px; }
+    #toolbar input[type="url"] {
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #eee;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      width: 360px;
+    }
+    button {
+      background: #3a7aff;
+      color: #fff;
+      border: none;
+      padding: 5px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    button:hover { background: #5590ff; }
+    button:disabled { background: #555; cursor: default; }
+    button.toggled { background: #2a9d5c; }
+    button.toggled:hover { background: #34b86e; }
+    #status { font-size: 0.75rem; color: #888; margin-left: auto; white-space: nowrap; }
+    #status.error { color: #ff5555; font-weight: 600; }
+
+    #canvasWrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      gap: 2px;
+      background: #000;
+    }
+    .panel { position: relative; overflow: hidden; background: #000; }
+    .panel canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+    .panel .panel-label {
+      position: absolute; top: 6px; left: 8px; z-index: 5;
+      font-size: 0.7rem; color: #8af; background: rgba(0,0,0,.6);
+      padding: 2px 7px; border-radius: 3px; pointer-events: none;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #message { font-size: 0.9rem; color: #666; text-align: center; max-width: 480px; line-height: 1.5; }
+    #message.error { color: #ff7070; }
+    #gpuError {
+      position: absolute; inset: 0;
+      display: none; align-items: center; justify-content: center;
+      background: #1a1a1a; flex-direction: column; gap: 12px; padding: 32px;
+      text-align: center;
+      z-index: 20;
+    }
+    #gpuError h2 { color: #ff7070; font-size: 1.1rem; }
+    #gpuError p  { color: #888; font-size: 0.85rem; line-height: 1.6; max-width: 420px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <h1>Babylon.js</h1>
+    <input id="urlInput" type="url" placeholder="http://localhost:8080/scenes/file.ply  (.ply / .splat / .spz)" />
+    <button id="loadBtn">Load</button>
+    <label title="Probe for a sibling <name>.lods/ folder (see examples/prune.html) and show every LOD tier side by side">
+      <input id="compareLods" type="checkbox" checked> Compare LODs
+    </label>
+    <button id="lockViewsBtn" title="When on, dragging any LOD panel orbits every panel together">Lock views: off</button>
+    <label>BG <input id="bgColor" type="color" value="#000000"></label>
+    <button id="resetBtn" disabled title="Focus all panels on their model (F)">Focus <kbd style="opacity:0.6;font-size:0.7em">F</kbd></button>
+    <span id="status">Independent Babylon.js + WebGPUEngine renderer, for comparison against HoloSplat's own (see examples/viewer.html)</span>
+  </div>
+
+  <div id="canvasWrap">
+    <div id="overlay">
+      <div id="message">Paste a scene URL above and click Load<br>
+        <small style="color:#555">Serve scenes with: <code style="color:#888">python server.py</code> → http://localhost:8080</small>
+      </div>
+    </div>
+    <div id="gpuError">
+      <h2>WebGPU not available</h2>
+      <p>This page requires WebGPU. Try Chrome 113+ or Edge 113+.<br>
+        On Chrome, make sure you're on <code>http://localhost</code> or <code>https://</code> — WebGPU is blocked on <code>file://</code>.</p>
+    </div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@babylonjs/core": "../node_modules/@babylonjs/core/index.js",
+      "@babylonjs/core/": "../node_modules/@babylonjs/core/",
+      "@babylonjs/loaders/": "../node_modules/@babylonjs/loaders/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import { WebGPUEngine } from '@babylonjs/core/Engines/webgpuEngine.js';
+    import { Scene } from '@babylonjs/core/scene.js';
+    import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera.js';
+    import { Color4 } from '@babylonjs/core/Maths/math.color.js';
+    import { Vector3 } from '@babylonjs/core/Maths/math.vector.js';
+    import { GaussianSplattingMesh } from '@babylonjs/core/Meshes/GaussianSplatting/gaussianSplattingMesh.js';
+    import '@babylonjs/loaders/SPLAT/splatFileLoader.js'; // registers the .ply/.splat/.spz scene-loader plugin
+
+    if (!navigator.gpu) {
+      document.getElementById('gpuError').style.display = 'flex';
+      document.getElementById('loadBtn').disabled = true;
+    }
+
+    const urlInput     = document.getElementById('urlInput');
+    const loadBtn       = document.getElementById('loadBtn');
+    const compareLods   = document.getElementById('compareLods');
+    const lockViewsBtn  = document.getElementById('lockViewsBtn');
+    const bgColor       = document.getElementById('bgColor');
+    const resetBtn       = document.getElementById('resetBtn');
+    const statusEl       = document.getElementById('status');
+    const messageEl      = document.getElementById('message');
+    const canvasWrap     = document.getElementById('canvasWrap');
+    const overlay        = document.getElementById('overlay');
+
+    // panels: [{ spec, canvas, panelEl, labelEl, engine, scene, camera, mesh, prevAlpha, prevBeta }]
+    let panels    = [];
+    let lockViews = false;
+    const baseStatus = statusEl.textContent;
+
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text || baseStatus;
+      statusEl.className   = isError ? 'error' : '';
+    }
+    function setMessage(text, isError = false) {
+      messageEl.textContent = text;
+      messageEl.className   = isError ? 'error' : '';
+    }
+
+    // ── LOD detection — same convention as examples/viewer.html: a sibling
+    // `<name>.lods/<name>.lod{N}.spz` folder, fractions [1, 0.8, 0.6, 0.4] of
+    // the splats kept for lod0..lod3 (see src/optimize.js's generateLods). ──
+    const LOD_FRACTIONS = [1, 0.8, 0.6, 0.4];
+
+    async function detectLods(url) {
+      const m = url.match(/\.(spz|ply|splat)$/i);
+      if (!m) return [];
+      const base  = url.slice(0, -m[0].length);
+      const slash = base.lastIndexOf('/');
+      const dir   = base.slice(0, slash + 1);
+      const name  = base.slice(slash + 1);
+
+      const found = await Promise.all(LOD_FRACTIONS.map(async (fraction, n) => {
+        const candidate = `${dir}${name}.lods/${name}.lod${n}.spz`;
+        try {
+          const res = await fetch(candidate, { method: 'HEAD', cache: 'no-store' });
+          return res.ok ? { label: `lod${n} (${Math.round(fraction * 100)}%)`, url: candidate } : null;
+        } catch { return null; }
+      }));
+      return found.filter(Boolean);
+    }
+
+    // ── Panel grid ─────────────────────────────────────────────────────────────
+    function destroyPanels() {
+      for (const p of panels) {
+        p.engine?.stopRenderLoop();
+        p.scene?.dispose();
+        p.engine?.dispose();
+      }
+      panels = [];
+      canvasWrap.querySelectorAll('.panel').forEach(el => el.remove());
+    }
+
+    function buildPanelGrid(specs) {
+      destroyPanels();
+      const cols = Math.ceil(Math.sqrt(specs.length));
+      canvasWrap.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+      for (const spec of specs) {
+        const panelEl = document.createElement('div');
+        panelEl.className = 'panel';
+        const canvas = document.createElement('canvas');
+        const labelEl = document.createElement('div');
+        labelEl.className = 'panel-label';
+        labelEl.textContent = spec.label;
+        panelEl.appendChild(canvas);
+        panelEl.appendChild(labelEl);
+        canvasWrap.appendChild(panelEl);
+        panels.push({
+          spec, canvas, panelEl, labelEl,
+          engine: null, scene: null, camera: null, mesh: null,
+          prevAlpha: 0, prevBeta: 0,
+        });
+      }
+    }
+
+    // ── Lock views ───────────────────────────────────────────────────────────
+    // ArcRotateCamera's pointer input mutates alpha/beta directly with no
+    // delta hook (unlike HoloSplat's OrbitCamera.orbitDeltaCallback — see
+    // examples/viewer.html) — so instead this diffs each camera's alpha/beta
+    // against its previous tick every frame; whichever camera actually moved
+    // (the one the user is dragging) has its delta replayed onto every other
+    // panel's camera. Zoom (radius) stays independent always, matching
+    // examples/viewer.html's scope (rotation lock only).
+    function lockTick() {
+      if (lockViews && panels.length > 1) {
+        for (const p of panels) {
+          if (!p.camera) continue;
+          const dAlpha = p.camera.alpha - p.prevAlpha;
+          const dBeta  = p.camera.beta  - p.prevBeta;
+          if (Math.abs(dAlpha) > 1e-9 || Math.abs(dBeta) > 1e-9) {
+            for (const q of panels) {
+              if (q === p || !q.camera) continue;
+              q.camera.alpha += dAlpha;
+              q.camera.beta  += dBeta;
+            }
+          }
+        }
+      }
+      for (const p of panels) {
+        if (p.camera) { p.prevAlpha = p.camera.alpha; p.prevBeta = p.camera.beta; }
+      }
+      requestAnimationFrame(lockTick);
+    }
+    requestAnimationFrame(lockTick);
+
+    lockViewsBtn.addEventListener('click', () => {
+      lockViews = !lockViews;
+      lockViewsBtn.textContent = `Lock views: ${lockViews ? 'on' : 'off'}`;
+      lockViewsBtn.classList.toggle('toggled', lockViews);
+    });
+
+    bgColor.addEventListener('input', e => {
+      const c = Color4.FromHexString(e.target.value + 'ff');
+      for (const p of panels) if (p.scene) p.scene.clearColor = c;
+    });
+
+    function focusCamera(p) {
+      if (!p.mesh || !p.camera) return;
+      const info = p.mesh.getBoundingInfo();
+      const min = info.boundingBox.minimumWorld, max = info.boundingBox.maximumWorld;
+      const center = info.boundingBox.centerWorld;
+      const extent = Math.max(max.x - min.x, max.y - min.y, max.z - min.z) * 0.5;
+      // Bounding info can still be zero/garbage if Babylon hasn't refreshed
+      // it for this GaussianSplattingMesh yet — leave the camera alone
+      // rather than snapping it to a degenerate radius/target.
+      if (!extent || !isFinite(extent)) return;
+      p.camera.target.copyFrom(center);
+      p.camera.radius = extent / Math.tan(p.camera.fov * 0.5) * 1.5;
+    }
+
+    resetBtn.addEventListener('click', () => { for (const p of panels) focusCamera(p); });
+    document.addEventListener('keydown', e => {
+      if ((e.key === 'f' || e.key === 'F') && document.activeElement !== urlInput) {
+        for (const p of panels) focusCamera(p);
+      }
+    });
+
+    // ── Load ─────────────────────────────────────────────────────────────────
+    async function loadScene(url) {
+      resetBtn.disabled = true;
+      loadBtn.disabled  = true;
+      setStatus('Loading…');
+      setMessage('Fetching scene…');
+      overlay.style.display = 'flex';
+
+      const lods  = compareLods.checked ? await detectLods(url) : [];
+      const specs = lods.length
+        ? [{ label: 'source', url }, ...lods]
+        : [{ label: url.split('/').pop().split('?')[0], url }];
+
+      buildPanelGrid(specs);
+
+      let remaining = panels.length;
+      let anyError  = null;
+
+      for (const p of panels) {
+        try {
+          p.engine = new WebGPUEngine(p.canvas, { antialias: true });
+          await p.engine.initAsync();
+
+          p.scene = new Scene(p.engine);
+          p.scene.clearColor = Color4.FromHexString(bgColor.value + 'ff');
+
+          p.camera = new ArcRotateCamera('cam', Math.PI / 2, Math.PI / 2, 2, Vector3.Zero(), p.scene);
+          p.camera.attachControl(p.canvas, true);
+          p.camera.wheelPrecision = 50;
+          p.camera.minZ = 0.01;
+          p.prevAlpha = p.camera.alpha;
+          p.prevBeta  = p.camera.beta;
+
+          p.mesh = new GaussianSplattingMesh('splat', p.spec.url, p.scene);
+          await new Promise((resolve, reject) => {
+            // GaussianSplattingMesh has no public load-error channel (its
+            // internal _loadingPromise isn't exposed) — onMeshReady only
+            // fires on success, so a bad URL would hang forever without
+            // this timeout. detectLods() already HEAD-checked every LOD
+            // candidate, so this should only ever trip for a bad "source" URL.
+            p.mesh.onMeshReady = () => resolve();
+            setTimeout(() => reject(new Error(`"${p.spec.label}" load timed out`)), 60000);
+          });
+
+          p.engine.runRenderLoop(() => p.scene.render());
+          new ResizeObserver(() => p.engine.resize()).observe(p.panelEl);
+
+          // No auto-fit here — GaussianSplattingMesh doesn't populate normal
+          // vertex buffers (it's texture/compute-driven), so its bounding
+          // info isn't reliably valid the instant onMeshReady fires; fitting
+          // to it immediately risks a zero/garbage radius that puts the
+          // camera somewhere degenerate. Same default camera as the original
+          // babylon-webgpu-test.html (radius 2, target origin) — use the
+          // Focus button/F once the scene is actually visible instead.
+          p.labelEl.textContent = `${p.spec.label} — ${p.mesh.splatCount?.toLocaleString() ?? '?'} splats`;
+        } catch (err) {
+          console.error(`[Babylon] panel "${p.spec.label}":`, err);
+          anyError = err;
+          p.labelEl.textContent = `${p.spec.label} — error`;
+        }
+
+        remaining--;
+        if (remaining === 0) {
+          if (anyError) {
+            setStatus('Error — see console', true);
+            setMessage(anyError.message, true);
+          } else {
+            setMessage('');
+            overlay.style.display = 'none';
+            setStatus(specs.length > 1 ? `${specs.length} LOD panels` : specs[0].label);
+          }
+          resetBtn.disabled = false;
+          loadBtn.disabled  = false;
+        }
+      }
+
+      window.__hsBabylonPanels = panels; // TEMP debug access
+    }
+
+    loadBtn.addEventListener('click', () => {
+      const url = urlInput.value.trim();
+      if (url) loadScene(url);
+    });
+    urlInput.addEventListener('keydown', e => { if (e.key === 'Enter') loadBtn.click(); });
+
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      const port = location.port || '8080';
+      urlInput.placeholder = `http://localhost:${port}/scenes/  (.ply / .splat / .spz)`;
+    }
+  </script>
+</body>
+</html>

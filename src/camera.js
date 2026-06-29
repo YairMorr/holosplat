@@ -5,7 +5,7 @@
  * View matrix is column-major Float32Array(16) compatible with WebGPU.
  */
 export class OrbitCamera {
-  constructor({ fov = 60, near = 0.1, far = 2000 } = {}) {
+  constructor({ fov = 60, near = 0.01, far = 2000 } = {}) {
     this.fov    = fov * Math.PI / 180;  // radians
     this.near   = near;
     this.far    = far;
@@ -18,7 +18,15 @@ export class OrbitCamera {
 
     // Set to false to disable all input handling (e.g. when scroll-scene owns playback).
     this.enabled    = true;
+    // Set to false to disable drag-orbit specifically. When that happens,
+    // left-drag pans instead of orbiting (if panEnabled), so pan is
+    // reachable without requiring a right-click drag.
+    this.orbitEnabled = true;
     this.panEnabled = true;
+    this.panSpeed   = 1;     // sensitivity multiplier (0..1, derived from damping)
+    this.panButton  = 2;     // mouse button that starts a pan-drag: 0 = left, 2 = right
+    this.panRadius  = null;  // max distance from panOrigin; null = unlimited
+    this.panOrigin  = null;  // world-space [x,y,z] centre for limited pan
 
     // Angular constraints (radians). null = unconstrained.
     // Set by constrainAngles(); cleared by clearConstraints().
@@ -27,49 +35,110 @@ export class OrbitCamera {
     this.phiMin   = null;
     this.phiMax   = null;
 
+    // Zoom (radius) control. zoomEnabled=false blocks wheel/pinch entirely.
+    this.zoomEnabled = true;
+    this.radiusMin   = null;
+    this.radiusMax   = null;
+
+    // Overlay callbacks — set by viewer.js when hs-* markers are active.
+    // orbitDeltaCallback(dTheta, dPhi)  — drag input routed as deltas instead of direct state mutation
+    // dragStartCallback()               — fired on left-button mousedown / touch
+    // dragEndCallback()                 — fired on mouseup / mouseleave / touch end
+    // panDeltaCallback(dx, dy, dz)      — right-drag/two-finger pan routed as a world-space
+    //                                      delta instead of mutating target directly (the
+    //                                      animation overwrites target every frame)
+    // zoomDeltaCallback(factor)         — wheel/pinch routed as a radius multiplier instead
+    //                                      of mutating radius directly (animation overwrites
+    //                                      radius every frame)
+    this.orbitDeltaCallback = null;
+    this.dragStartCallback  = null;
+    this.dragEndCallback    = null;
+    this.panDeltaCallback   = null;
+    this.zoomDeltaCallback  = null;
+
     this._drag    = null;      // { x, y, button }
     this._touches = [];
 
+    // When true, single-finger touch is left alone (no preventDefault, no
+    // orbit/pan) so the page can scroll natively — set by player.js
+    // for scroll-driven scenes, where swipe-to-scroll is the primary mobile
+    // interaction. Two-finger pinch/pan still works regardless. Cleared
+    // during freecamera "explore" acts so single-finger touch can orbit.
+    // Using the setter so touch-action is updated on the document root.
+    this._allowTouchScroll = false;
+
     this.viewMatrix = new Float32Array(16);
     this.projMatrix = new Float32Array(16);
+  }
+
+  get allowTouchScroll() { return this._allowTouchScroll; }
+  set allowTouchScroll(v) {
+    this._allowTouchScroll = !!v;
+    // pan-y: browser handles vertical scroll natively; horizontal touches reach JS
+    // uninterrupted (no touchcancel), so horizontal-swipe orbit still works.
+    // Resetting to '' restores default `auto` when scroll mode is off.
+    if (typeof document !== 'undefined') {
+      document.documentElement.style.touchAction = v ? 'pan-y' : '';
+    }
   }
 
   // ── Attach / detach input listeners ────────────────────────────────────────
 
   attach(canvas) {
     this._canvas = canvas;
-    this._onMouseDown  = e => this._mouseDown(e);
+
+    // Check whether a client point is actually over the canvas — not just
+    // within its bounding rect, since overlays (e.g. the holosplat editor
+    // panel) are positioned on top of the canvas via z-index while the
+    // canvas itself still spans the full viewport underneath them. A rect-
+    // only check would treat clicks on such overlays as canvas clicks,
+    // calling preventDefault() on their mousedown and silently blocking the
+    // browser's default click-to-focus behavior on any input inside them.
+    const overCanvas = (cx, cy) => canvas.contains(document.elementFromPoint(cx, cy));
+
+    // Mouse events: listen on document so overlapping elements don't block them.
+    this._onMouseDown  = e => { if (overCanvas(e.clientX, e.clientY)) this._mouseDown(e); };
     this._onMouseMove  = e => this._mouseMove(e);
-    this._onMouseUp    = () => { this._drag = null; };
+    this._onMouseUp    = () => { this._drag = null; this.dragEndCallback?.(); };
+    // Wheel must stay on canvas so we can preventDefault without the passive restriction.
     this._onWheel      = e => this._wheel(e);
-    this._onTouchStart = e => this._touchStart(e);
+    // Touch: listen on document for same reason.
+    this._onTouchStart = e => { if (overCanvas(e.touches[0]?.clientX, e.touches[0]?.clientY)) this._touchStart(e); };
     this._onTouchMove  = e => this._touchMove(e);
     this._onTouchEnd   = e => this._touchEnd(e);
-    this._onCtxMenu    = e => e.preventDefault();
+    this._onCtxMenu    = e => { if (overCanvas(e.clientX, e.clientY)) e.preventDefault(); };
+    // Mouse leaves the browser window entirely: relatedTarget is null only when
+    // the pointer exits the document (not when moving to another element).
+    // Ends any active drag even when the cursor is dragged or jumps
+    // off-window without a mouseup.
+    this._onMouseOutDoc = e => {
+      if (e.relatedTarget !== null) return;
+      if (this._drag) { this._drag = null; this.dragEndCallback?.(); }
+    };
 
-    canvas.addEventListener('mousedown',   this._onMouseDown);
-    canvas.addEventListener('mousemove',   this._onMouseMove);
-    canvas.addEventListener('mouseup',     this._onMouseUp);
-    canvas.addEventListener('mouseleave',  this._onMouseUp);
-    canvas.addEventListener('wheel',       this._onWheel, { passive: false });
-    canvas.addEventListener('touchstart',  this._onTouchStart, { passive: false });
-    canvas.addEventListener('touchmove',   this._onTouchMove,  { passive: false });
-    canvas.addEventListener('touchend',    this._onTouchEnd);
-    canvas.addEventListener('contextmenu', this._onCtxMenu);
+    document.addEventListener('mousedown',   this._onMouseDown);
+    document.addEventListener('mousemove',   this._onMouseMove);
+    document.addEventListener('mouseup',     this._onMouseUp);
+    document.addEventListener('mouseout',    this._onMouseOutDoc);
+    canvas.addEventListener('wheel',         this._onWheel, { passive: false });
+    document.addEventListener('touchstart',  this._onTouchStart, { passive: false });
+    document.addEventListener('touchmove',   this._onTouchMove,  { passive: false });
+    document.addEventListener('touchend',    this._onTouchEnd);
+    document.addEventListener('contextmenu', this._onCtxMenu);
   }
 
   detach() {
     const c = this._canvas;
     if (!c) return;
-    c.removeEventListener('mousedown',   this._onMouseDown);
-    c.removeEventListener('mousemove',   this._onMouseMove);
-    c.removeEventListener('mouseup',     this._onMouseUp);
-    c.removeEventListener('mouseleave',  this._onMouseUp);
-    c.removeEventListener('wheel',       this._onWheel);
-    c.removeEventListener('touchstart',  this._onTouchStart);
-    c.removeEventListener('touchmove',   this._onTouchMove);
-    c.removeEventListener('touchend',    this._onTouchEnd);
-    c.removeEventListener('contextmenu', this._onCtxMenu);
+    document.removeEventListener('mousedown',   this._onMouseDown);
+    document.removeEventListener('mousemove',   this._onMouseMove);
+    document.removeEventListener('mouseup',     this._onMouseUp);
+    document.removeEventListener('mouseout',    this._onMouseOutDoc);
+    c.removeEventListener('wheel',              this._onWheel);
+    document.removeEventListener('touchstart',  this._onTouchStart);
+    document.removeEventListener('touchmove',   this._onTouchMove);
+    document.removeEventListener('touchend',    this._onTouchEnd);
+    document.removeEventListener('contextmenu', this._onCtxMenu);
     this._canvas = null;
   }
 
@@ -79,42 +148,57 @@ export class OrbitCamera {
     if (!this.enabled) return;
     if (e.button === 2 && !this.panEnabled) return;
     this._drag = { x: e.clientX, y: e.clientY, button: e.button };
+    if (e.button === 0) this.dragStartCallback?.();
     e.preventDefault();
   }
 
   _mouseMove(e) {
-    if (!this._drag) return;
-    const dx = e.clientX - this._drag.x;
-    const dy = e.clientY - this._drag.y;
-    this._drag.x = e.clientX;
-    this._drag.y = e.clientY;
+    if (this._drag) {
+      const dx = e.clientX - this._drag.x;
+      const dy = e.clientY - this._drag.y;
+      this._drag.x = e.clientX;
+      this._drag.y = e.clientY;
 
-    if (this._drag.button === 2) {
-      // Right-drag: pan
-      this._pan(dx, dy);
-    } else {
-      // Left-drag: orbit
-      this._orbit(dx, dy);
+      const isPanButton = this._drag.button === this.panButton;
+      if (this.panEnabled && (isPanButton || (!this.orbitEnabled && this._drag.button === 0))) {
+        // pan.button drag, or left-drag when orbit is off but pan is on: pan.
+        this._pan(dx, dy);
+        return;
+      }
+      if (this._drag.button === 0 && !isPanButton) {
+        // Left-drag (when not bound to pan): orbit
+        this._orbit(dx, dy);
+      }
     }
   }
 
   _wheel(e) {
-    if (!this.enabled) return;
+    if (!this.enabled || !this.zoomEnabled) return;
     e.preventDefault();
     const factor = e.deltaY > 0 ? 1.1 : 0.9;
+    if (this.zoomDeltaCallback) { this.zoomDeltaCallback(factor); return; }
     this.radius = Math.max(0.01, this.radius * factor);
+    if (this.radiusMin !== null) this.radius = Math.max(this.radiusMin, this.radius);
+    if (this.radiusMax !== null) this.radius = Math.min(this.radiusMax, this.radius);
   }
 
   // ── Touch handlers ─────────────────────────────────────────────────────────
 
   _touchStart(e) {
     if (!this.enabled) return;
+    if (this.allowTouchScroll && e.touches.length < 2) {
+      return; // no preventDefault — page scrolls freely
+    }
     e.preventDefault();
     this._touches = Array.from(e.touches).map(t => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
   }
 
   _touchMove(e) {
     if (!this.enabled) return;
+    if (this.allowTouchScroll && e.touches.length < 2) {
+      this._touches = [];
+      return;
+    }
     e.preventDefault();
     const prev = this._touches;
     const curr = Array.from(e.touches).map(t => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
@@ -122,13 +206,25 @@ export class OrbitCamera {
     if (curr.length === 1 && prev.length === 1) {
       const dx = curr[0].x - prev[0].x;
       const dy = curr[0].y - prev[0].y;
-      this._orbit(dx, dy);
+      // Single-finger touch acts as a left-click drag.
+      if (this.panEnabled && (this.panButton === 0 || !this.orbitEnabled)) {
+        this._pan(dx, dy);
+      } else {
+        this._orbit(dx, dy);
+      }
     } else if (curr.length === 2 && prev.length === 2) {
       // Pinch to zoom
       const prevDist = Math.hypot(prev[1].x - prev[0].x, prev[1].y - prev[0].y);
       const currDist = Math.hypot(curr[1].x - curr[0].x, curr[1].y - curr[0].y);
-      if (prevDist > 0) {
-        this.radius = Math.max(0.01, this.radius * (prevDist / currDist));
+      if (prevDist > 0 && currDist > 0 && this.zoomEnabled) {
+        const factor = prevDist / currDist;
+        if (this.zoomDeltaCallback) {
+          this.zoomDeltaCallback(factor);
+        } else {
+          this.radius = Math.max(0.01, this.radius * factor);
+          if (this.radiusMin !== null) this.radius = Math.max(this.radiusMin, this.radius);
+          if (this.radiusMax !== null) this.radius = Math.min(this.radiusMax, this.radius);
+        }
       }
       // Two-finger pan (centroid delta)
       if (this.panEnabled) {
@@ -145,14 +241,21 @@ export class OrbitCamera {
 
   _touchEnd(e) {
     this._touches = Array.from(e.touches).map(t => ({ id: t.identifier, x: t.clientX, y: t.clientY }));
+    if (this._touches.length === 0) this.dragEndCallback?.();
   }
 
   // ── Orbit & pan helpers ────────────────────────────────────────────────────
 
   _orbit(dx, dy) {
-    const speed = 0.005;
-    this.theta -= dx * speed;
-    this.phi    = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.phi + dy * speed));
+    const speed  = 0.005;
+    const dTheta = -dx * speed;
+    const dPhi   =  dy * speed;
+    if (this.orbitDeltaCallback) {
+      this.orbitDeltaCallback(dTheta, dPhi);
+      return;
+    }
+    this.theta += dTheta;
+    this.phi    = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, this.phi + dPhi));
     if (this.thetaMin !== null) this.theta = Math.max(this.thetaMin, this.theta);
     if (this.thetaMax !== null) this.theta = Math.min(this.thetaMax, this.theta);
     if (this.phiMin   !== null) this.phi   = Math.max(this.phiMin,   this.phi);
@@ -190,14 +293,49 @@ export class OrbitCamera {
     this.phiMax   = null;
   }
 
+  /** Disable scroll/pinch zoom entirely (used when entering free-camera mode without hs-zoom). */
+  disableZoom() {
+    this.zoomEnabled = false;
+    this.radiusMin   = null;
+    this.radiusMax   = null;
+  }
+
+  /** Enable zoom constrained to ±rangePct% of baseRadius. */
+  constrainZoom(baseRadius, rangePct) {
+    const r = rangePct / 100;
+    this.zoomEnabled = true;
+    this.radiusMin   = Math.max(0.01, baseRadius * (1 - r));
+    this.radiusMax   = baseRadius * (1 + r);
+  }
+
+  /** Re-enable unrestricted zoom (used when leaving free-camera mode). */
+  enableZoom() {
+    this.zoomEnabled = true;
+    this.radiusMin   = null;
+    this.radiusMax   = null;
+  }
+
   _pan(dx, dy) {
-    // Move target in the camera's right/up plane, scaled by radius
-    const speed = this.radius * 0.001;
+    const speed = this.radius * 0.001 * this.panSpeed;
     const right = this._cameraRight();
     const up    = this._cameraUp();
-    this.target[0] -= (right[0] * dx - up[0] * dy) * speed;
-    this.target[1] -= (right[1] * dx - up[1] * dy) * speed;
-    this.target[2] -= (right[2] * dx - up[2] * dy) * speed;
+    const ddx = -(right[0] * dx - up[0] * dy) * speed;
+    const ddy = -(right[1] * dx - up[1] * dy) * speed;
+    const ddz = -(right[2] * dx - up[2] * dy) * speed;
+    if (this.panDeltaCallback) { this.panDeltaCallback(ddx, ddy, ddz); return; }
+    this.target[0] += ddx;
+    this.target[1] += ddy;
+    this.target[2] += ddz;
+    if (this.panRadius !== null && this.panOrigin) {
+      const [ox, oy, oz] = this.panOrigin;
+      const dist = Math.hypot(this.target[0]-ox, this.target[1]-oy, this.target[2]-oz);
+      if (dist > this.panRadius) {
+        const f = this.panRadius / dist;
+        this.target[0] = ox + (this.target[0]-ox) * f;
+        this.target[1] = oy + (this.target[1]-oy) * f;
+        this.target[2] = oz + (this.target[2]-oz) * f;
+      }
+    }
   }
 
   _cameraRight() {
@@ -218,6 +356,8 @@ export class OrbitCamera {
     lookAt(eye, this.target, [0, 1, 0], this.viewMatrix);
     perspective(this.fov, width / height, this.near, this.far, this.projMatrix);
   }
+
+  get eye() { return this._eye(); }
 
   _eye() {
     const cp = Math.cos(this.phi), sp = Math.sin(this.phi);

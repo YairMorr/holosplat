@@ -5,18 +5,135 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Headphones</title>
   <style>
-    html, body, #scene { margin: 0; width: 100%; height: 100dvh; background: #000; }
+    *, html, body { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; }
+
+    /* Fixed viewer — always occupies the full viewport.
+       100lvh = large viewport height (bars-hidden state) so the canvas never
+       resizes as the mobile browser bar animates in/out. */
+    #scene {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100vw; height: 100lvh;
+      z-index: 0;
+    }
+
+    /* Scroll zones stack below the fixed canvas.
+       Each div drives the animation for its named scene segment.
+       Attach a scene via the HoloSplat editor (open ?hs in the URL). */
+    #hs-scroll {
+      position: relative;
+    }
+    .hs-zone {
+      width: 100%;
+      border: 1px solid red;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: white;
+    }
+
+    .v-100 {
+      height: 100svh;
+    }
+
+    .v-200 {
+      height: 200svh;
+    }
+
+    .v-300 {
+      height: 300svh;
+    }
+
+    .v-500 {
+      height: 500svh;
+    }
+
+    .temp-title {
+      position: relative;
+      z-index: 10;
+    }
+
+    .color-btn-row {
+      position: absolute;
+      bottom: 200px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 14px;
+      z-index: 10;
+    }
+    .color-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      cursor: pointer;
+      padding: 0;
+      transition: transform 0.15s, border-color 0.15s;
+    }
+    .color-btn:hover { transform: scale(1.1); }
+    .color-btn[aria-pressed="true"] { border-color: #fff; }
+    #headphones-blue   { background: #3a6aff; }
+    #headphones-orange { background: #ff8a3a; }
+    #headphones-yellow { background: #e8c33a; }
+    #headphones-purple { background: #9a3aff; }
   </style>
 </head>
 <body>
+
+  <!-- HoloSplat viewer (fixed) -->
   <div id="scene"></div>
+
+  <!-- Scroll zones — one per animation scene.
+       IDs match the marker names in website.animation.json. -->
+  <div id="hs-scroll">
+    <div id="hero-section"             class="hs-zone v-100"><div class="temp-title">Hero-section</div></div>
+    <div id="promo-transition"         class="hs-zone v-100"><div class="temp-title">promo-transition</div></div>
+    <div id="promo-video"              class="hs-zone v-100"><div class="temp-title">promo-video</div></div>
+    <div id="features-transition"      class="hs-zone v-100"><div class="temp-title">features-transition</div></div>
+    <div id="feature-01"               class="hs-zone v-100"><div class="temp-title">feature-01</div></div>
+    <div id="feature-02-transition"    class="hs-zone v-100"><div class="temp-title">feature-02-transition</div></div>
+    <div id="feature-02"               class="hs-zone v-100"><div class="temp-title">feature-02</div></div>
+    <div id="feature-03-transition"    class="hs-zone v-100"><div class="temp-title">feature-03-transition</div></div>
+    <div id="feature-03"               class="hs-zone v-100"><div class="temp-title">feature-03</div></div>
+    <div id="color-choices-transition" class="hs-zone v-100"></div>
+    <div id="color-choices" class="hs-zone v-200" style="position: relative;">
+      <div class="color-btn-row">
+        <button id="headphones-blue"   data-hs-color="blue"   class="color-btn" aria-label="Blue"   aria-pressed="true"></button>
+        <button id="headphones-orange" data-hs-color="orange" class="color-btn" aria-label="Orange"></button>
+        <button id="headphones-yellow" data-hs-color="yellow" class="color-btn" aria-label="Yellow"></button>
+        <button id="headphones-purple" data-hs-color="purple" class="color-btn" aria-label="Purple"></button>
+      </div>
+    </div>
+    <div id="case" class="hs-zone v-500"><div class="temp-title">case</div></div>
+  </div>
+
   <script type="module">
     import { player } from '../dist/holosplat.esm.js';
-    player('#scene', {
+    const api = player('#scene', {
       flipY: true,
-      scene: '/scenes/headphones.spz',
-      animation: '/scenes/website.animation.json',
+      animation: '/scenes/headphones/website.animation.json',
+      clips: [{"url":"/scenes/headphones/headphones-rig.json","splatsDir":"/scenes/headphones","defaults":{"color":"blue","fold":"unfolded"}},{"url":"/scenes/headphones/case-rig.json","splatsDir":"/scenes/headphones","defaults":{"lid":"closed"}}], // hs-clips
+      scenes: {"intro":{"linkedId":"hero-section","playback":"auto","playOnce":true},"hero-section":{"linkedId":"hero-section","playback":"auto","waitForTimeline":true,"pingpong":true,"blendOut":46,"pan":{"enabled":true}},"promo-transition":{"linkedId":"promo-transition","blendIn":33},"promo-video":{"linkedId":"promo-video"},"features-transition":{"linkedId":"features-transition"},"feature-01":{"linkedId":"feature-01","waitForTimeline":true},"feature-02-transition":{"linkedId":"feature-02-transition"},"feature-02":{"linkedId":"feature-02"},"feature-03-transition":{"linkedId":"feature-03-transition"},"feature-03":{"linkedId":"feature-03"},"color-choices-transition":{"linkedId":"color-choices-transition"},"color-choices":{"linkedId":"color-choices"},"case":{"linkedId":"case"},"end":{}}, // hs-scenes
+      masks: {"headphones":{"feather":0.18},"headphones..color=yellow":{"feather":0.49},"headphones..color=purple":{"feather":0.49},"headphones..color=orange":{"feather":0.49},"headphones..color=blue":{"feather":0.49}}, // hs-masks
+      aaDilation: 0.5, // hs-aa
+      sh: 3, // hs-sh
+      partsDir: '/scenes/headphones',
+      gpuSort: true, // GPU compute-shader radix sort — validated on Pixel 7 with LOD1 scene
     });
+
+    // Color buttons drive the asset's "color" axis transition (see
+    // export_holosplat_asset.py's axis-transition export / Viewer#playVariant) —
+    // independent of the main scroll timeline, so this just needs the player's
+    // api once it exists.
+    const colorButtons = document.querySelectorAll('.color-btn');
+    for (const btn of colorButtons) {
+      btn.addEventListener('click', () => {
+        api.playVariant('color', btn.dataset.hsColor);
+        for (const b of colorButtons) b.setAttribute('aria-pressed', String(b === btn));
+      });
+    }
   </script>
 </body>
 </html>

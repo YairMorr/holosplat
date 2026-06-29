@@ -8,42 +8,59 @@ HOW TO USE
 ──────────
 1. Open the Scripting workspace in Blender.
 2. Open this file (or paste it into a new text block).
-3. Edit the CONFIG section below if needed.
+3. Edit the CONFIG section below if needed — including LIB_DIR, if this repo
+   doesn't live at the default path.
 4. Press "Run Script".
+
+This file only holds config + a small loader — the actual export logic
+lives in _holosplat_export_lib.py, loaded fresh off disk every run, so
+editing that file takes effect immediately without reopening/repasting this
+one. See its module docstring if you want to read the implementation.
 
 The output .json file is saved next to your .blend file by default.
 
 ANIMATED PARTS
 ──────────────
-To drive separate Gaussian splat models from one animation, parent each GS
-model to an Empty and follow the naming convention:
+Place an Empty in the "HoloSplat Parts" collection for each animated part —
+its name is just an identifier and is never parsed, so name it anything
+(e.g. "ctrl.fork-left"). What splat file gets loaded is determined entirely
+by a child mesh object parented to that Empty, named "splat.<splat-name>":
 
-    [prefix].[splat-name][.suffix]
+    ctrl.fork-left  (Empty, in "HoloSplat Parts")
+      └─ splat.fork-left  (mesh, parented to the Empty)  →  loads fork-left.spz
 
-The Empty's full name becomes the animation object ID; the splat file to load
-is derived from the middle segment (splat-name). Examples:
+Color/material variants are declared the same way, as sibling children with
+an extra suffix segment:
 
-    ctrl.fork-left       →  id "ctrl.fork-left",  loads fork-left.spz
-    ctrl.fork-left.001   →  id "ctrl.fork-left.001", loads fork-left.spz
-    fork-left            →  id "fork-left",        loads fork-left.spz
+    splat.fork-left          →  primary file: fork-left.spz
+    splat.fork-left.orange   →  variant "orange": fork-left.orange.spz
 
-Prefix (e.g. "ctrl") and suffix (e.g. ".001") are optional. The splat file
-extension (.spz / .ply / .splat) doesn't matter — HoloSplat detects it at
-load time.
-
-Place the Empties in a collection named "HoloSplat Parts":
-    ctrl.fork-left    →  id "ctrl.fork-left"
-    ctrl.fork-right   →  id "ctrl.fork-right"
-
-Alternatively, prefix Empty names with "hs-part." (still supported):
-    hs-part.fork-left  →  id "hs-part.fork-left"  (splat name: "fork-left")
+A part with no "splat.<name>" child is skipped (with a console warning) — it
+has nothing telling HoloSplat which file to load. Objects outside the
+"HoloSplat Parts" collection are always ignored, even if similarly named.
 
 Animate the Empties. The script exports their world transform (position +
 rotation) per frame. At runtime HoloSplat applies each Empty's transform to
-the corresponding splat model.
+the corresponding splat model (loaded separately by the web player — the
+Blender mesh itself is just a placeholder/preview, never used at runtime).
 
 Important: apply any scale on the Empties (Ctrl+A → Scale) before exporting,
 and ensure GS_OBJECT_NAME is set so coordinate spaces align correctly.
+
+REFERENCE OBJECTS (ignored entirely)
+─────────────────────────────────────
+If you're loading objects purely as visual references (e.g. the actual
+physical product, for lining things up while animating) and they shouldn't
+be touched by this script at all, put them — and all their children — in a
+collection named "reference" (anywhere in the scene; nested collections are
+fine, and so is having more than one "reference" collection — Blender
+auto-renames duplicates "reference.001" etc., and those are matched too).
+Everything inside it is skipped by every part of this script, regardless of
+what it's named, even if it happens to collide with one of the naming
+conventions below (e.g. a child mesh accidentally named "splat.x", or an
+object accidentally named "focal-point"). Select the
+reference object(s) and press M → New Collection (with "Select Hierarchy"
+on) to move the whole hierarchy in at once.
 
 CALLOUT OBJECTS
 ───────────────
@@ -68,6 +85,17 @@ In the web page, place a matching card div inside the player container:
 The player projects the Empty's position, draws a dot and a line, and
 positions the card at (dot + offset). See examples/callouts.css for
 styling defaults and directional variants.
+
+CLIPS (product customization — color/size/add-on buttons)
+───────────────────────────────────────────────────────────
+Button-triggered, independent per-object animations (e.g. color/size/add-on
+swaps) are exported separately, by export_holosplat_asset.py, from a
+dedicated asset .blend file with its own timeline — not from this script.
+See that file's docstring for setup. (Earlier versions of this tried
+scoping clips to NLA action-local "pose markers", then to reserved negative
+frames in this same file's timeline — neither panned out, the former
+wasn't reachable/usable the way it needed to be and the latter hit a
+Blender restriction on negative frames — hence the separate file.)
 
 COORDINATE SYSTEM
 ─────────────────
@@ -109,274 +137,27 @@ GS_OBJECT_NAME = None
 # callout positions so the animation matches the flipped scene.
 FLIP_Y = False
 
+# Folder holding _holosplat_export_lib.py — the actual export logic, loaded
+# fresh from disk every run. Only needs changing if this repo isn't checked
+# out at this path.
+LIB_DIR = r"D:\dev\holosplat\blender"
+
 # ─────────────────────────────────────────────────────────────────────────────
 
-import bpy, json, math, mathutils
+import types
 from pathlib import Path
 
-scene = bpy.context.scene
+# Manual compile+exec instead of importlib's spec_from_file_location/
+# exec_module — that path goes through SourceFileLoader, which caches
+# compiled bytecode in __pycache__ and can serve a stale version if the
+# cache's staleness check ever misfires. This never touches disk for
+# anything but reading the source, so it's always fresh.
+_lib_path = Path(LIB_DIR) / "_holosplat_export_lib.py"
+_lib = types.ModuleType("_holosplat_export_lib")
+exec(compile(_lib_path.read_text(encoding="utf-8"), str(_lib_path), "exec"), _lib.__dict__)
 
-# ── Resolve camera ────────────────────────────────────────────────────────────
-cam_obj = scene.objects.get(CAMERA_NAME) if CAMERA_NAME else scene.camera
-if cam_obj is None or cam_obj.type != 'CAMERA':
-    raise RuntimeError(
-        "HoloSplat export: no camera found. "
-        "Set CAMERA_NAME or make sure the scene has an active camera."
-    )
-
-# ── Resolve GS object (optional) ─────────────────────────────────────────────
-gs_obj = scene.objects.get(GS_OBJECT_NAME) if GS_OBJECT_NAME else None
-gs_inv = gs_obj.matrix_world.inverted() if gs_obj else None
-
-if gs_obj:
-    print(f"HoloSplat: using GS object '{gs_obj.name}' — camera will be in its local space")
-else:
-    print("HoloSplat: no GS object set — using default Blender → Y-up axis conversion")
-
-# ── Frame range ───────────────────────────────────────────────────────────────
-f_start = FRAME_START if FRAME_START is not None else scene.frame_start
-f_end   = FRAME_END   if FRAME_END   is not None else scene.frame_end
-fps     = scene.render.fps
-
-# ── FOV from camera — vertical (fovY), matching WebGPU perspective matrix ─────
-# cam_data.angle is Blender's "active" FOV:
-#   HORIZONTAL / AUTO-landscape  → horizontal FOV
-#   VERTICAL   / AUTO-portrait   → vertical FOV
-# We always need fovY, so convert horizontal→vertical using the render aspect.
-cam_data  = cam_obj.data
-render    = scene.render
-aspect    = (render.resolution_x * render.pixel_aspect_x) / \
-            (render.resolution_y * render.pixel_aspect_y)
-cam_angle = cam_data.angle   # radians
-
-if cam_data.sensor_fit == 'VERTICAL':
-    vfov_rad = cam_angle
-elif cam_data.sensor_fit == 'HORIZONTAL':
-    vfov_rad = 2 * math.atan(math.tan(cam_angle * 0.5) / aspect)
-else:  # AUTO — landscape uses hFOV, portrait uses vFOV
-    if aspect >= 1.0:
-        vfov_rad = 2 * math.atan(math.tan(cam_angle * 0.5) / aspect)
-    else:
-        vfov_rad = cam_angle
-
-fov_deg = round(math.degrees(vfov_rad), 4)
-
-# ── Clip distances — converted to SPZ-local space if a GS object is used ──────
-# Blender clip values are in world units. When the GS object has a scale
-# transform, local-space distances = world distances / object_scale.
-if gs_obj:
-    obj_scale = gs_obj.matrix_world.to_scale()
-    inv_scale = 3.0 / (obj_scale.x + obj_scale.y + obj_scale.z)  # 1 / avg_scale
-    clip_near = cam_data.clip_start * inv_scale
-    clip_far  = cam_data.clip_end   * inv_scale
-else:
-    clip_near = cam_data.clip_start
-    clip_far  = cam_data.clip_end
-
-# ── Coordinate conversion helpers ────────────────────────────────────────────
-
-def bl_to_hs(v):
-    """Blender (X right, Y fwd, Z up)  →  HoloSplat (X right, Y up, Z back)"""
-    return [v.x, v.z, -v.y]
-
-def normalize(v):
-    l = math.sqrt(v[0]**2 + v[1]**2 + v[2]**2)
-    return [v[0]/l, v[1]/l, v[2]/l] if l > 1e-9 else [0, 0, -1]
-
-# ── Collect callout objects ───────────────────────────────────────────────────
-callout_objects = {}   # id → object (deduped)
-
-# Method 1: "HoloSplat Callouts" collection
-if "HoloSplat Callouts" in bpy.data.collections:
-    for obj in bpy.data.collections["HoloSplat Callouts"].all_objects:
-        callout_objects[obj.name] = obj
-
-# Method 2: names starting with "hs."
-for obj in scene.objects:
-    if obj.name.startswith("hs."):
-        callout_objects[obj.name] = obj
-
-callouts = []
-for name, obj in callout_objects.items():
-    cid = name.removeprefix("hs.")
-    world_pos = obj.matrix_world.translation
-
-    if gs_inv:
-        # Transform callout position into GS object's local space (= splat file space)
-        local_pos = gs_inv @ world_pos
-        pos = [local_pos.x, local_pos.y, local_pos.z]
-    else:
-        pos = bl_to_hs(world_pos)
-
-    callouts.append({"id": cid, "pos": [round(x, 6) for x in pos]})
-
-print(f"HoloSplat: found {len(callouts)} callout(s): {[c['id'] for c in callouts]}")
-
-# ── Collect part objects ──────────────────────────────────────────────────────
-# "HoloSplat Parts" collection  OR  objects named "hs-part.<id>"
-part_objects = {}   # id → object (deduped, insertion-ordered)
-
-if "HoloSplat Parts" in bpy.data.collections:
-    for obj in bpy.data.collections["HoloSplat Parts"].all_objects:
-        if obj.type == 'EMPTY':
-            part_objects[obj.name] = obj
-
-for obj in scene.objects:
-    if obj.type == 'EMPTY' and obj.name.startswith("hs-part."):
-        part_objects[obj.name] = obj
-
-print(f"HoloSplat: found {len(part_objects)} part(s): {list(part_objects.keys())}")
-
-# Quaternion for Blender → HoloSplat axis conversion (Rx −90°)
-# Used only when GS_OBJECT_NAME is None (no gs_inv path).
-Q_BL_TO_HS = mathutils.Euler((-math.pi / 2, 0, 0)).to_quaternion()
-# 4×4 rotation matrix equivalent (used for full-matrix coordinate changes)
-_R_BL_TO_HS = Q_BL_TO_HS.to_matrix().to_4x4()
-
-# ── Bind-pose (rest) matrices — recorded at f_start ──────────────────────────
-# Parts are exported as RELATIVE transforms (current × rest⁻¹) so that at
-# f_start the transform is identity and the splat data stays in place.
-scene.frame_set(f_start)
-_part_rest_mats = {}
-for _pid, _obj in part_objects.items():
-    if gs_inv:
-        _part_rest_mats[_pid] = (gs_inv @ _obj.matrix_world).copy()
-    else:
-        _part_rest_mats[_pid] = (_R_BL_TO_HS @ _obj.matrix_world @ _R_BL_TO_HS.inverted()).copy()
-
-def transform_part(obj, pid):
-    """Return (pos_list, quat_xyzw) as the delta from the bind pose at f_start."""
-    if gs_inv:
-        curr = gs_inv @ obj.matrix_world
-    else:
-        curr = _R_BL_TO_HS @ obj.matrix_world @ _R_BL_TO_HS.inverted()
-    rel = curr @ _part_rest_mats[pid].inverted()
-    p   = rel.translation
-    q   = rel.to_quaternion()   # Blender (w,x,y,z)
-    return [p.x, p.y, p.z], [q.x, q.y, q.z, q.w]
-
-# Pre-allocate per-part frame lists
-part_frame_data = {pid: [] for pid in part_objects}
-
-# ── Export camera per frame ───────────────────────────────────────────────────
-saved_frame = scene.frame_current
-frames_flat = []
-
-for f in range(f_start, f_end + 1):
-    scene.frame_set(f)
-
-    mw = cam_obj.matrix_world
-
-    if gs_inv:
-        local_pos = gs_inv @ mw.translation
-        fwd_world = -mw.col[2].xyz
-        local_fwd = (gs_inv.to_3x3() @ fwd_world).normalized()
-        eye     = [local_pos.x, local_pos.y, local_pos.z]
-        forward = normalize([local_fwd.x, local_fwd.y, local_fwd.z])
-    else:
-        pos    = mw.translation
-        fwd_bl = -mw.col[2].xyz
-        eye     = bl_to_hs(pos)
-        forward = normalize(bl_to_hs(fwd_bl))
-
-    frames_flat.extend([round(x, 6) for x in eye + forward])
-
-    # Part transforms at this frame
-    for pid, obj in part_objects.items():
-        pos_hs, quat_xyzw = transform_part(obj, pid)
-        part_frame_data[pid].extend(
-            [round(x, 6) for x in pos_hs + quat_xyzw]
-        )
-
-scene.frame_set(saved_frame)   # restore original frame
-
-frame_count = f_end - f_start + 1
-print(f"HoloSplat: exported {frame_count} frames at {fps} fps  (duration {frame_count/fps:.2f}s)")
-
-# ── Focal point (orbit anchor for the free-camera mode) ──────────────────────
-# Place an Empty named "focal-point" (or "hs-focal-point") in the scene to
-# pin the camera's orbit target when hs-free / hs-h* / hs-v* markers are active.
-focal_point = None
-for obj in scene.objects:
-    if obj.name in ("focal-point", "hs-focal-point") and obj.type == 'EMPTY':
-        wp = obj.matrix_world.translation
-        if gs_inv:
-            lp = gs_inv @ wp
-            focal_point = [round(lp.x, 6), round(lp.y, 6), round(lp.z, 6)]
-        else:
-            focal_point = [round(x, 6) for x in bl_to_hs(wp)]
-        print(f"HoloSplat: focal point '{obj.name}' → {focal_point}")
-        break
-
-# ── Apply FLIP_Y (180° X rotation: negate Y and Z) ───────────────────────────
-if FLIP_Y:
-    for i in range(frame_count):
-        b = i * 6
-        frames_flat[b + 1] = -frames_flat[b + 1]  # eye.y
-        frames_flat[b + 2] = -frames_flat[b + 2]  # eye.z
-        frames_flat[b + 4] = -frames_flat[b + 4]  # forward.y
-        frames_flat[b + 5] = -frames_flat[b + 5]  # forward.z
-    for c in callouts:
-        c["pos"][1] = -c["pos"][1]
-        c["pos"][2] = -c["pos"][2]
-    # Part transforms: negate py/pz; quaternion (x,y,z,w) → (w,-z,y,-x)
-    for frames in part_frame_data.values():
-        for i in range(frame_count):
-            b = i * 7
-            frames[b + 1] = -frames[b + 1]   # py
-            frames[b + 2] = -frames[b + 2]   # pz
-            qx, qy, qz, qw = frames[b+3], frames[b+4], frames[b+5], frames[b+6]
-            frames[b+3] = qw
-            frames[b+4] = -qz
-            frames[b+5] = qy
-            frames[b+6] = -qx
-    if focal_point:
-        focal_point[1] = -focal_point[1]
-        focal_point[2] = -focal_point[2]
-    print("HoloSplat: FLIP_Y applied to camera, callouts, and part transforms")
-
-# ── Export timeline markers ───────────────────────────────────────────────────
-# Blender timeline markers (added with M in the Timeline/Dopesheet editor) are
-# exported as a dict { markerName: frameNumber } where frame numbers are
-# 0-based relative to the export start frame.
-#
-# In HTML, reference them with data-from / data-to / data-frame attributes:
-#   <div class="hs-act" data-from="intro" data-to="desk_reveal" ...>
-#
-# Only markers within the exported frame range are included.
-markers = {}
-for marker in sorted(scene.timeline_markers, key=lambda m: m.frame):
-    if f_start <= marker.frame <= f_end:
-        # Frame is relative to export start (0-based)
-        markers[marker.name] = marker.frame - f_start
-
-print(f"HoloSplat: exported {len(markers)} marker(s): {list(markers.keys())}")
-
-# ── Write JSON ────────────────────────────────────────────────────────────────
-objects_out = [
-    {"id": pid, "frames": frames}
-    for pid, frames in part_frame_data.items()
-]
-
-data = {
-    "version"    : 2 if objects_out else 1,
-    "fps"        : fps,
-    "frameCount" : frame_count,
-    "fov"        : fov_deg,
-    "near"       : round(clip_near, 6),
-    "far"        : round(clip_far,  6),
-    "frames"     : frames_flat,
-    "objects"    : objects_out,
-    "callouts"   : callouts,
-    "markers"    : markers,
-    "focalPoint" : focal_point,
-}
-
-out_dir  = bpy.path.abspath(OUTPUT_PATH)
-name     = OUTPUT_NAME or Path(bpy.data.filepath).stem or "scene_anim"
-out_file = str(Path(out_dir) / f"{name}.json")
-
-with open(out_file, "w") as fp:
-    json.dump(data, fp, separators=(",", ":"))
-
-print(f"HoloSplat: saved → {out_file}")
+_lib.run(dict(
+    OUTPUT_PATH=OUTPUT_PATH, OUTPUT_NAME=OUTPUT_NAME, CAMERA_NAME=CAMERA_NAME,
+    FRAME_START=FRAME_START, FRAME_END=FRAME_END, GS_OBJECT_NAME=GS_OBJECT_NAME,
+    FLIP_Y=FLIP_Y,
+))

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>GaussianSplats3D control test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+    #info {
+      position: fixed; top: 8px; left: 8px; z-index: 10;
+      color: #8af; font: 12px/1.6 monospace; background: rgba(0,0,0,.6);
+      padding: 8px 12px; border-radius: 6px; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">
+    GaussianSplats3D (independent Three.js implementation)<br>
+    Loading headphones_new.ply, SH degree 2 (max this lib supports)…<br>
+    Drag to orbit, scroll to zoom — match the HoloSplat camera angle for comparison.
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "../node_modules/three/build/three.module.js",
+      "@mkkellogg/gaussian-splats-3d": "../node_modules/@mkkellogg/gaussian-splats-3d/build/gaussian-splats-3d.module.js"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+
+    const viewer = new GaussianSplats3D.Viewer({
+      sphericalHarmonicsDegree: 2, // max supported by this library (no degree 3)
+      sharedMemoryForWorkers: false, // avoids needing COOP/COEP headers from the dev server
+      gpuAcceleratedSort: false,     // recommended off when sharedMemoryForWorkers is off
+      cameraUp: [0, -1, 0],
+      initialCameraPosition: [0, 0, -2],
+      initialCameraLookAt: [0, 0, 0],
+    });
+
+    viewer.addSplatScene('/scenes/headphones_new.ply', {
+      showLoadingUI: true,
+      progressiveLoad: false,
+    }).then(() => {
+      viewer.start();
+      document.getElementById('info').textContent = 'Loaded. Drag to orbit, scroll to zoom.';
+    }).catch(err => {
+      console.error('[GS3D test]', err);
+      document.getElementById('info').textContent = 'Error loading — see console: ' + err.message;
+    });
+  </script>
+</body>
+</html>

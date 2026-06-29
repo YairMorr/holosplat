@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HoloSplat – Gaussian Splat Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      color: #eee;
+      font-family: system-ui, sans-serif;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 16px;
+      background: #1a1a1a;
+      border-bottom: 1px solid #333;
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    #toolbar h1 { font-size: 1rem; font-weight: 600; color: #fff; margin-right: 4px; }
+    #toolbar label { font-size: 0.8rem; color: #999; display: flex; align-items: center; gap: 6px; }
+    #toolbar input[type="text"],
+    #toolbar input[type="url"] {
+      background: #2a2a2a;
+      border: 1px solid #444;
+      color: #eee;
+      padding: 4px 8px;
+      border-radius: 4px;
+      font-size: 0.8rem;
+      width: 360px;
+    }
+    #urlList { display: flex; flex-direction: column; gap: 4px; }
+    .url-row { display: flex; gap: 4px; align-items: center; }
+    .url-row input { flex: 1; }
+    button {
+      background: #3a7aff;
+      color: #fff;
+      border: none;
+      padding: 5px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    button:hover { background: #5590ff; }
+    button:disabled { background: #555; cursor: default; }
+    button.toggled { background: #2a9d5c; }
+    button.toggled:hover { background: #34b86e; }
+    .url-row button.remove-url {
+      background: #333; color: #aaa; padding: 4px 8px; font-size: 0.75rem; min-width: 26px;
+    }
+    .url-row button.remove-url:hover { background: #555; color: #fff; }
+    #addUrlBtn { background: #2a2a2a; border: 1px solid #444; color: #999; font-size: 0.75rem; padding: 3px 10px; }
+    #addUrlBtn:hover { background: #3a3a3a; color: #eee; }
+    #status { font-size: 0.75rem; color: #888; margin-left: auto; white-space: nowrap; }
+    #status.error { color: #ff5555; font-weight: 600; }
+
+    #canvasWrap {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+      display: grid;
+      gap: 2px;
+      background: #000;
+    }
+    .panel { position: relative; overflow: hidden; background: #000; }
+    .panel canvas { width: 100%; height: 100%; display: block; }
+    .panel .panel-label {
+      position: absolute; top: 6px; left: 8px; z-index: 5;
+      font-size: 0.7rem; color: #ddd; background: rgba(0,0,0,.55);
+      padding: 2px 7px; border-radius: 3px; pointer-events: none;
+      font-family: ui-monospace, Menlo, Consolas, monospace;
+    }
+
+    #overlay {
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 12px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #message { font-size: 0.9rem; color: #666; text-align: center; max-width: 480px; line-height: 1.5; }
+    #message.error { color: #ff7070; }
+    #progress { width: 240px; height: 4px; background: #333; border-radius: 2px; overflow: hidden; display: none; }
+    #progressBar { height: 100%; background: #3a7aff; width: 0%; transition: width 0.1s; }
+    #gpuError {
+      position: absolute; inset: 0;
+      display: none; align-items: center; justify-content: center;
+      background: #1a1a1a; flex-direction: column; gap: 12px; padding: 32px;
+      text-align: center;
+      z-index: 20;
+    }
+    #gpuError h2 { color: #ff7070; font-size: 1.1rem; }
+    #gpuError p  { color: #888; font-size: 0.85rem; line-height: 1.6; max-width: 420px; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <h1>HoloSplat</h1>
+    <div id="urlList">
+      <div class="url-row">
+        <input type="url" placeholder="http://localhost:8080/scenes/file.ply  (.ply / .splat / .spz)" />
+      </div>
+    </div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <button id="addUrlBtn">＋ URL</button>
+      <button id="loadBtn">Load</button>
+    </div>
+    <label title="When loading a single .ply/.spz/.splat file, also probe for a sibling <name>.lods/ folder (see examples/prune.html) and show every LOD tier side by side">
+      <input id="compareLods" type="checkbox" checked> Compare LODs
+    </label>
+    <button id="lockViewsBtn" title="When on, dragging any LOD panel orbits every panel together">Lock views: off</button>
+    <label>BG <input id="bgColor" type="color" value="#000000"></label>
+    <label>Scale <input id="splatScale" type="range" min="0.1" max="3" step="0.05" value="1.08"> <span id="scaleVal">1.08</span></label>
+    <label>Gamma <input id="gammaSlider" type="range" min="0.5" max="3" step="0.05" value="1"> <span id="gammaVal">1.00</span></label>
+    <label>AA Dilation <input id="aaDilationSlider" type="range" min="0.05" max="1.5" step="0.05" value="0.3" title="Covariance low-pass filter — higher values increase splat overlap, smoothing per-splat color noise at the cost of sharpness"> <span id="aaDilationVal">0.30</span></label>
+    <label>SH <select id="shDegreeEl" title="Spherical harmonics degree (reloads)">
+      <option value="0">0 (dc only)</option>
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3">3 (full)</option>
+    </select></label>
+    <label>Quality <select id="qualityEl" title="Device-tier preset — caps SH degree/pixel ratio/LOD (reloads)">
+      <option value="auto">auto (device-detected)</option>
+      <option value="high">high</option>
+      <option value="medium">medium</option>
+      <option value="low">low</option>
+    </select></label>
+    <label><input id="flipY" type="checkbox"> Flip Y</label>
+    <label><input id="autoRotate" type="checkbox"> Auto-rotate</label>
+    <button id="resetBtn" disabled title="Focus all panels on their model (F)">Focus <kbd style="opacity:0.6;font-size:0.7em">F</kbd></button>
+    <span id="status">Ready</span>
+  </div>
+
+  <div id="canvasWrap">
+    <div id="overlay">
+      <div id="message">Paste a scene URL above and click Load<br>
+        <small style="color:#555">Serve scenes with: <code style="color:#888">python server.py</code> → http://localhost:8080</small>
+      </div>
+      <div id="progress"><div id="progressBar"></div></div>
+    </div>
+    <div id="gpuError">
+      <h2>WebGPU not available</h2>
+      <p>HoloSplat requires WebGPU. Try Chrome 113+ or Edge 113+.<br>
+        On Chrome, make sure you're on <code>http://localhost</code> or <code>https://</code> — WebGPU is blocked on <code>file://</code>.</p>
+    </div>
+  </div>
+
+  <script type="module">
+    import { create } from '../dist/holosplat.esm.js';
+
+    // ── WebGPU availability check ────────────────────────────────────────────
+    if (!navigator.gpu) {
+      document.getElementById('gpuError').style.display = 'flex';
+      document.getElementById('loadBtn').disabled = true;
+    }
+
+    // ── Element refs ─────────────────────────────────────────────────────────
+    const urlList      = document.getElementById('urlList');
+    const addUrlBtn     = document.getElementById('addUrlBtn');
+    const loadBtn        = document.getElementById('loadBtn');
+    const resetBtn        = document.getElementById('resetBtn');
+    const statusEl        = document.getElementById('status');
+    const messageEl       = document.getElementById('message');
+    const progressEl      = document.getElementById('progress');
+    const progressBar     = document.getElementById('progressBar');
+    const compareLods     = document.getElementById('compareLods');
+    const lockViewsBtn    = document.getElementById('lockViewsBtn');
+    const canvasWrap      = document.getElementById('canvasWrap');
+    const overlay         = document.getElementById('overlay');
+    const bgColor        = document.getElementById('bgColor');
+    const splatScale     = document.getElementById('splatScale');
+    const scaleVal       = document.getElementById('scaleVal');
+    const gammaSlider    = document.getElementById('gammaSlider');
+    const gammaVal       = document.getElementById('gammaVal');
+    const aaDilationSlider = document.getElementById('aaDilationSlider');
+    const aaDilationVal    = document.getElementById('aaDilationVal');
+    const shDegreeEl     = document.getElementById('shDegreeEl');
+    const qualityEl      = document.getElementById('qualityEl');
+    const flipY          = document.getElementById('flipY');
+    const autoRotate      = document.getElementById('autoRotate');
+
+    // panels: [{ spec, canvas, panelEl, labelEl, viewer }]
+    let panels    = [];
+    let lockViews = false;
+
+    // ── URL list helpers ──────────────────────────────────────────────────────
+    function getUrls() {
+      return [...urlList.querySelectorAll('input')].map(i => i.value.trim()).filter(Boolean);
+    }
+
+    function updateRemoveButtons() {
+      const rows = urlList.querySelectorAll('.url-row');
+      rows.forEach(row => {
+        const btn = row.querySelector('.remove-url');
+        if (btn) btn.style.display = rows.length > 1 ? '' : 'none';
+      });
+    }
+
+    function addUrlRow(value = '') {
+      const row = document.createElement('div');
+      row.className = 'url-row';
+      const input = document.createElement('input');
+      input.type = 'url';
+      input.value = value;
+      input.addEventListener('keydown', e => { if (e.key === 'Enter') loadBtn.click(); });
+      const btn = document.createElement('button');
+      btn.className = 'remove-url';
+      btn.textContent = '×';
+      btn.title = 'Remove';
+      btn.addEventListener('click', () => { row.remove(); updateRemoveButtons(); });
+      row.appendChild(input);
+      row.appendChild(btn);
+      urlList.appendChild(row);
+      updateRemoveButtons();
+      return input;
+    }
+
+    // Wire Enter on the initial row
+    urlList.querySelector('input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') loadBtn.click();
+    });
+    updateRemoveButtons();
+
+    addUrlBtn.addEventListener('click', () => { addUrlRow(); });
+
+    // ── LOD detection ──────────────────────────────────────────────────────────
+    // LOD tiers live in a `<name>.lods/<name>.lod{N}.spz` sibling folder (see
+    // examples/prune.html / src/device-tier.js's resolveLodUrl) and are always
+    // .spz regardless of the source file's own format. generateLods() keeps
+    // fractions [1, 0.8, 0.6, 0.4] of the splats for lod0..lod3 — see
+    // src/optimize.js.
+    const LOD_FRACTIONS = [1, 0.8, 0.6, 0.4];
+
+    async function detectLods(url) {
+      const m = url.match(/\.(spz|ply|splat)$/i);
+      if (!m) return [];
+      const base  = url.slice(0, -m[0].length);
+      const slash = base.lastIndexOf('/');
+      const dir   = base.slice(0, slash + 1);
+      const name  = base.slice(slash + 1);
+
+      const found = await Promise.all(LOD_FRACTIONS.map(async (fraction, n) => {
+        const candidate = `${dir}${name}.lods/${name}.lod${n}.spz`;
+        try {
+          const res = await fetch(candidate, { method: 'HEAD', cache: 'no-store' });
+          return res.ok ? { label: `lod${n} (${Math.round(fraction * 100)}%)`, url: candidate } : null;
+        } catch { return null; }
+      }));
+      return found.filter(Boolean);
+    }
+
+    // ── Panel grid ─────────────────────────────────────────────────────────────
+    function destroyPanels() {
+      for (const p of panels) p.viewer?.destroy();
+      panels = [];
+      canvasWrap.querySelectorAll('.panel').forEach(el => el.remove());
+    }
+
+    function buildPanelGrid(specs) {
+      destroyPanels();
+      const cols = Math.ceil(Math.sqrt(specs.length));
+      canvasWrap.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+      for (const spec of specs) {
+        const panelEl = document.createElement('div');
+        panelEl.className = 'panel';
+        const canvas = document.createElement('canvas');
+        const labelEl = document.createElement('div');
+        labelEl.className = 'panel-label';
+        labelEl.textContent = spec.label;
+        panelEl.appendChild(canvas);
+        panelEl.appendChild(labelEl);
+        canvasWrap.appendChild(panelEl);
+        panels.push({ spec, canvas, panelEl, labelEl, viewer: null });
+      }
+    }
+
+    // Orbit lock: every panel's camera gets the same orbitDeltaCallback —
+    // when lockViews is on, a drag on any one panel applies its delta to
+    // every panel's camera (replicating OrbitCamera's own default theta/phi
+    // update + clamp, since a custom callback bypasses that); when off, a
+    // panel only ever updates its own camera. Zoom/pan stay independent
+    // always — only rotation is meant to lock.
+    function applyOrbitDelta(sourceCam, dTheta, dPhi) {
+      const cams = lockViews ? panels.map(p => p.viewer?.camera).filter(Boolean) : [sourceCam];
+      for (const cam of cams) {
+        cam.theta += dTheta;
+        cam.phi    = Math.max(-Math.PI / 2 + 0.01, Math.min(Math.PI / 2 - 0.01, cam.phi + dPhi));
+      }
+    }
+
+    lockViewsBtn.addEventListener('click', () => {
+      lockViews = !lockViews;
+      lockViewsBtn.textContent = `Lock views: ${lockViews ? 'on' : 'off'}`;
+      lockViewsBtn.classList.toggle('toggled', lockViews);
+    });
+
+    // ── Controls (wired once; broadcast to every active panel viewer) ────────
+    function eachViewer(fn) { for (const p of panels) if (p.viewer) fn(p.viewer); }
+
+    bgColor.addEventListener('input',  e => eachViewer(v => v.setBackground(e.target.value)));
+    splatScale.addEventListener('input', e => {
+      scaleVal.textContent = parseFloat(e.target.value).toFixed(2);
+      eachViewer(v => v.setSplatScale(parseFloat(e.target.value)));
+    });
+    gammaSlider.addEventListener('input', e => {
+      const g = parseFloat(e.target.value);
+      gammaVal.textContent = g.toFixed(2);
+      eachViewer(v => v.setGamma(g));
+    });
+    aaDilationSlider.addEventListener('input', e => {
+      const v = parseFloat(e.target.value);
+      aaDilationVal.textContent = v.toFixed(2);
+      eachViewer(viewer => viewer.setAaDilation(v));
+    });
+    shDegreeEl.addEventListener('change', () => {
+      const urls = getUrls();
+      if (urls.length && panels.length) loadScene(urls);
+    });
+    qualityEl.addEventListener('change', () => {
+      const urls = getUrls();
+      if (urls.length && panels.length) loadScene(urls);
+    });
+    flipY.addEventListener('change', e => eachViewer(v => v.setFlipY(e.target.checked)));
+    autoRotate.addEventListener('change', e => eachViewer(v => v.setAutoRotate(e.target.checked)));
+    resetBtn.addEventListener('click', () => eachViewer(v => v.focusCamera()));
+
+    document.addEventListener('keydown', e => {
+      if (e.key === 'f' || e.key === 'F') {
+        if (urlList.contains(document.activeElement)) return;
+        eachViewer(v => v.focusCamera());
+      }
+    });
+
+    // ── Load ─────────────────────────────────────────────────────────────────
+    function setStatus(text, isError = false) {
+      statusEl.textContent = text;
+      statusEl.className   = isError ? 'error' : '';
+    }
+
+    function setMessage(text, isError = false) {
+      messageEl.textContent = text;
+      messageEl.className   = isError ? 'error' : '';
+    }
+
+    async function loadScene(urls) {
+      resetBtn.disabled = true;
+      loadBtn.disabled  = true;
+
+      setStatus('Loading…');
+      setMessage('Fetching scene…');
+      overlay.style.display = 'flex';
+      progressEl.style.display = 'block';
+      progressBar.style.width  = '0%';
+
+      // LOD comparison only applies to a single composited scene file — multi-
+      // URL loads are treated as an explicit multi-part composite, same as before.
+      let specs;
+      if (urls.length === 1 && compareLods.checked) {
+        const lods = await detectLods(urls[0]);
+        specs = lods.length
+          ? [{ label: 'source', url: urls[0] }, ...lods]
+          : [{ label: urls[0].split('/').pop().split('?')[0], url: urls[0] }];
+      } else {
+        specs = [{ label: `${urls.length} files`, url: null, parts: urls }];
+      }
+
+      buildPanelGrid(specs);
+
+      const commonOpts = {
+        background: bgColor.value,
+        splatScale: parseFloat(splatScale.value),
+        aaDilation: parseFloat(aaDilationSlider.value),
+        flipY:      flipY.checked,
+        autoRotate: autoRotate.checked,
+        shDegree:   parseInt(shDegreeEl.value, 10),
+        quality:    qualityEl.value,
+      };
+
+      let remaining = panels.length;
+      let anyError  = null;
+
+      await Promise.all(panels.map(async (p) => {
+        const loadOpts = p.spec.parts
+          ? { parts: Object.fromEntries(p.spec.parts.map((u, i) => [u.split('/').pop().split('?')[0] || `part${i}`, u])) }
+          : { src: p.spec.url };
+
+        try {
+          p.viewer = await create({
+            canvas: p.canvas,
+            ...commonOpts,
+            ...loadOpts,
+            onProgress(frac) {
+              progressBar.style.width = `${(frac * 100).toFixed(0)}%`;
+              setMessage(`Loading… ${(frac * 100).toFixed(0)}%`);
+            },
+            onError(err) {
+              console.error(`[HoloSplat] panel "${p.spec.label}":`, err);
+              anyError = err;
+            },
+          });
+        } catch (err) {
+          console.error(`[HoloSplat] panel "${p.spec.label}":`, err);
+          anyError = err;
+        }
+
+        if (p.viewer) {
+          p.viewer.setGamma(parseFloat(gammaSlider.value));
+          if (p.viewer.camera) {
+            p.viewer.camera.orbitDeltaCallback = (dTheta, dPhi) => applyOrbitDelta(p.viewer.camera, dTheta, dPhi);
+          }
+          const stats = p.viewer.getStats?.();
+          if (stats) p.labelEl.textContent = `${p.spec.label} — ${stats.numSplats.toLocaleString()} splats`;
+        }
+
+        remaining--;
+        if (remaining === 0) {
+          if (anyError) {
+            setStatus('Error — see console', true);
+            setMessage(anyError.message, true);
+          } else {
+            setMessage('');
+            overlay.style.display = 'none';
+            const label = specs.length > 1 ? `${specs.length} LOD panels` : specs[0].label;
+            setStatus(label);
+          }
+          progressEl.style.display = 'none';
+          resetBtn.disabled = false;
+          loadBtn.disabled  = false;
+        }
+      }));
+
+      window.__hsPanels = panels; // TEMP debug access — ES module scope isn't exposed to the console otherwise
+    }
+
+    loadBtn.addEventListener('click', () => {
+      const urls = getUrls();
+      if (urls.length) loadScene(urls);
+    });
+
+    // Pre-fill placeholder with local server URL if on localhost
+    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+      const port = location.port || '8080';
+      urlList.querySelector('input').placeholder = `http://localhost:${port}/scenes/  (.ply / .splat / .spz)`;
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Babylon.js WebGPU gaussian splatting control test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; background: #000; overflow: hidden; }
+    canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+    #info {
+      position: fixed; top: 8px; left: 8px; z-index: 10;
+      color: #8af; font: 12px/1.6 monospace; background: rgba(0,0,0,.6);
+      padding: 8px 12px; border-radius: 6px; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="info">Babylon.js + WebGPUEngine (independent implementation)<br>Initializing…</div>
+  <canvas id="canvas"></canvas>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "@babylonjs/core": "../node_modules/@babylonjs/core/index.js",
+      "@babylonjs/core/": "../node_modules/@babylonjs/core/",
+      "@babylonjs/loaders/": "../node_modules/@babylonjs/loaders/"
+    }
+  }
+  </script>
+
+  <script type="module">
+    import { WebGPUEngine } from '@babylonjs/core/Engines/webgpuEngine.js';
+    import { Scene } from '@babylonjs/core/scene.js';
+    import { ArcRotateCamera } from '@babylonjs/core/Cameras/arcRotateCamera.js';
+    import { Vector3 } from '@babylonjs/core/Maths/math.vector.js';
+    import { GaussianSplattingMesh } from '@babylonjs/core/Meshes/GaussianSplatting/gaussianSplattingMesh.js';
+    import '@babylonjs/loaders/SPLAT/splatFileLoader.js'; // registers the .ply/.splat scene-loader plugin
+
+    const info = document.getElementById('info');
+    const canvas = document.getElementById('canvas');
+
+    async function main() {
+      if (!navigator.gpu) {
+        info.textContent = 'WebGPU not available in this browser.';
+        return;
+      }
+
+      const engine = new WebGPUEngine(canvas, { antialias: true });
+      await engine.initAsync();
+
+      const scene = new Scene(engine);
+      scene.clearColor.set(0, 0, 0, 1);
+
+      const camera = new ArcRotateCamera('cam', Math.PI / 2, Math.PI / 2, 2, Vector3.Zero(), scene);
+      camera.attachControl(canvas, true);
+      camera.wheelPrecision = 50;
+      camera.minZ = 0.01;
+
+      info.textContent = 'Loading headphones_yellow.ply (SH degree 2, max this lib supports)…';
+
+      const splat = new GaussianSplattingMesh('splat', '/scenes/headphones_yellow.ply', scene);
+      splat.onMeshReady = () => {
+        info.textContent = 'Loaded via WebGPUEngine. Drag to orbit, scroll to zoom.';
+      };
+
+      engine.runRenderLoop(() => scene.render());
+      window.addEventListener('resize', () => engine.resize());
+    }
+
+    main().catch(err => {
+      console.error('[Babylon WebGPU test]', err);
+      info.textContent = 'Error — see console: ' + err.message;
+    });
+  </script>
+</body>
+</html>

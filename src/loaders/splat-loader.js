@@ -64,7 +64,7 @@ export function parseSplat(buffer) {
     data[d + 15] = qw / ql;
   }
 
-  return { data, count: N };
+  return { data, count: N, shData: null, numSHBases: 0 };
 }
 
 // fetchWithProgress is defined in fetch-utils.js (shared)

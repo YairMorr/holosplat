@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HoloSplat – GPU Radix Sort Correctness Test</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111;
+      color: #eee;
+      font-family: system-ui, sans-serif;
+      padding: 16px;
+    }
+    h1 { font-size: 1.1rem; margin-bottom: 12px; }
+    canvas { display: block; width: 480px; height: 360px; background: #000; margin-bottom: 16px; }
+    pre {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 12px;
+      font-size: 0.85rem;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      max-width: 720px;
+    }
+    .pass { color: #6f6; }
+    .fail { color: #f66; }
+  </style>
+</head>
+<body>
+  <h1>HoloSplat – GPU Radix Sort Correctness Test</h1>
+  <canvas id="viewer" width="480" height="360"></canvas>
+  <pre id="log">Loading...</pre>
+
+  <script type="module">
+    import { Viewer } from '../dist/holosplat.esm.js';
+    import { SORT_SHADER } from '../src/sort-shaders.js';
+
+    const logEl = document.getElementById('log');
+    const lines = [];
+    function print(msg, cls) {
+      lines.push(cls ? `<span class="${cls}">${msg}</span>` : msg);
+      logEl.innerHTML = lines.join('\n');
+    }
+
+    if (!navigator.gpu) {
+      print('WebGPU is not available in this browser.', 'fail');
+    } else {
+      run().catch(err => print(`ERROR: ${err.message}\n${err.stack}`, 'fail'));
+    }
+
+    async function run() {
+      const canvas = document.getElementById('viewer');
+      const viewer = new Viewer({ canvas, gpuSort: true });
+      await viewer.init();
+
+      // Surface WebGPU validation/shader-compile errors, which don't throw —
+      // they're reported asynchronously via this event.
+      viewer._renderer.device.addEventListener('uncapturederror', (event) => {
+        print(`GPU ERROR: ${event.error.constructor.name}: ${event.error.message}`, 'fail');
+      });
+
+      // Also dump compilation messages for the sort shader module directly.
+      {
+        const module = viewer._renderer.device.createShaderModule({ code: SORT_SHADER });
+        const info = await module.getCompilationInfo();
+        for (const m of info.messages) {
+          print(`SORT_SHADER ${m.type} @ ${m.lineNum}:${m.linePos}: ${m.message}`,
+                m.type === 'error' ? 'fail' : undefined);
+        }
+        if (!info.messages.length) print('SORT_SHADER: no compilation messages');
+      }
+
+      print('Loading scene...');
+      await viewer.load('../scenes/desk.spz');
+
+      const N = viewer._numSplats;
+      print(`Loaded ${N} splats from desk.spz`);
+
+      // Set up camera/uniforms for a single frame, same as Viewer#_tick.
+      viewer._camera.update(canvas.width, canvas.height);
+      const view  = viewer._camera.viewMatrix;
+      const proj  = viewer._camera.projMatrix;
+      const focal = viewer._camera.focalLength(canvas.height);
+
+      viewer._renderer.updateUniforms({
+        view, proj, width: canvas.width, height: canvas.height, focal,
+        near: viewer._camera.near, radiusCap: viewer._effectiveRadiusCap,
+      });
+
+      // Run the GPU radix sort and read back the resulting permutation.
+      viewer._renderer.runGpuSort(N);
+      const order = await viewer._renderer.debugReadOrder(N);
+
+      // ── Check 1: order is a valid permutation of 0..N-1 ──────────────────────
+      const seen = new Uint8Array(N);
+      let dupes = 0, outOfRange = 0;
+      for (let i = 0; i < N; i++) {
+        const idx = order[i];
+        if (idx >= N) { outOfRange++; continue; }
+        if (seen[idx]) dupes++;
+        seen[idx] = 1;
+      }
+      let missing = 0;
+      for (let i = 0; i < N; i++) if (!seen[i]) missing++;
+
+      const permOk = dupes === 0 && missing === 0 && outOfRange === 0;
+      print(`Permutation check: ${permOk ? 'PASS' : 'FAIL'} `
+          + `(duplicates=${dupes}, missing=${missing}, out-of-range=${outOfRange})`,
+          permOk ? 'pass' : 'fail');
+
+      // ── Check 2: resulting order is monotonic back-to-front ──────────────────
+      // Same view-space depth formula as Viewer#_computeDepths, for the
+      // single-part (identity transform) case used here.
+      const g = viewer._gaussians;
+      const v2 = view[2], v6 = view[6], v10 = view[10], v14 = view[14];
+      const viewZ = new Float32Array(N);
+      for (let i = 0; i < N; i++) {
+        const o = i * 16;
+        viewZ[i] = v2 * g[o] + v6 * g[o + 1] + v10 * g[o + 2] + v14;
+      }
+
+      // Ascending viewZ (most negative/far first) = back-to-front. Allow a small
+      // tolerance for f32 (GPU) vs f64 (JS) rounding differences near ties.
+      const EPS = 1e-3;
+      let violations = 0, maxViolation = 0;
+      for (let i = 0; i < N - 1; i++) {
+        const diff = viewZ[order[i]] - viewZ[order[i + 1]];
+        if (diff > EPS) {
+          violations++;
+          if (diff > maxViolation) maxViolation = diff;
+        }
+      }
+      const monoOk = violations === 0;
+      print(`Monotonicity check: ${monoOk ? 'PASS' : 'FAIL'} `
+          + `(violations=${violations}/${N - 1}, maxViolation=${maxViolation.toFixed(6)})`,
+          monoOk ? 'pass' : 'fail');
+
+      print('');
+      print(permOk && monoOk ? 'ALL CHECKS PASSED' : 'SOME CHECKS FAILED',
+            permOk && monoOk ? 'pass' : 'fail');
+
+      viewer.start();
+    }
+  </script>
+</body>
+</html>

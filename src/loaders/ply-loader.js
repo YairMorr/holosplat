@@ -18,15 +18,18 @@
 import { fetchWithProgress } from './fetch-utils.js';
 
 const SH_C0 = 0.28209479177387814;
+const SH_C1 = 0.4886025119029199;
+const SH_C2 = [1.0925484305920792, -1.0925484305920792, 0.31539156525252005, -1.0925484305920792, 0.5462742152960396];
+const SH_C3 = [-0.5900435899266435, 2.890611442640554, -0.4570457994644658, 0.3731763325901154, -0.4570457994644658, 1.445305721320277, -0.5900435899266435];
 
 // ── Public API ─────────────────────────────────────────────────────────────
 
-export async function loadPly(url, onProgress) {
+export async function loadPly(url, onProgress, shDegree = 0) {
   const buffer = await fetchWithProgress(url, onProgress);
-  return parsePly(buffer);
+  return parsePly(buffer, shDegree);
 }
 
-export function parsePly(buffer) {
+export function parsePly(buffer, shDegree = 0) {
   const bytes = new Uint8Array(buffer);
   const eoh   = findEndHeader(bytes);
   if (eoh < 0) throw new Error('Invalid PLY: end_header not found');
@@ -35,7 +38,8 @@ export function parsePly(buffer) {
   );
   if (numVertices === 0) throw new Error('PLY file contains no vertices');
   const src = new DataView(buffer, eoh);
-  return { data: decodePlyVertices(src, propMap, stride, hasColor, numVertices), count: numVertices };
+  const { data, shData, numSHBases } = decodePlyVertices(src, propMap, stride, hasColor, numVertices, shDegree);
+  return { data, count: numVertices, shData, numSHBases };
 }
 
 /**
@@ -48,10 +52,10 @@ export function parsePly(buffer) {
  * pulling more from the network, so the caller never misses data even if
  * the entire file arrived in the first network read.
  *
- * @returns {{ numVertices: number,
+ * @returns {{ numVertices: number, numSHBases: number,
  *             consume: (onChunk, onProgress?) => Promise<void> }}
  */
-export async function openPlyStream(url, onHeaderProgress) {
+export async function openPlyStream(url, onHeaderProgress, shDegree = 0) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${res.status} loading ${url}`);
 
@@ -78,6 +82,12 @@ export async function openPlyStream(url, onHeaderProgress) {
       const pending = buf.slice(eoh);  // vertex bytes already in memory
       const { numVertices, propMap, stride, hasColor } = info;
 
+      // Compute numSHBases from the header so the caller can pre-allocate.
+      const numSHBasesHdr = propMap['f_rest_44'] ? 15 : propMap['f_rest_23'] ? 8 : propMap['f_rest_8'] ? 3 : 0;
+      const maxFileDegHdr = numSHBasesHdr >= 15 ? 3 : numSHBasesHdr >= 8 ? 2 : numSHBasesHdr >= 3 ? 1 : 0;
+      const effectiveDegHdr = Math.min(shDegree, maxFileDegHdr);
+      const streamSHBases = effectiveDegHdr >= 3 ? 15 : effectiveDegHdr >= 2 ? 8 : effectiveDegHdr >= 1 ? 3 : 0;
+
       const consume = async (onChunk, onProgress) => {
         let p = pending;
 
@@ -96,13 +106,11 @@ export async function openPlyStream(url, onHeaderProgress) {
           const nVerts = Math.floor(p.length / stride);
           if (nVerts > 0) {
             const usedBytes = nVerts * stride;
-            onChunk(
-              decodePlyVertices(
-                new DataView(p.buffer, p.byteOffset, usedBytes),
-                propMap, stride, hasColor, nVerts
-              ),
-              nVerts
+            const { data, shData } = decodePlyVertices(
+              new DataView(p.buffer, p.byteOffset, usedBytes),
+              propMap, stride, hasColor, nVerts, shDegree
             );
+            onChunk(data, nVerts, shData);
             p = p.slice(usedBytes);
           }
 
@@ -110,7 +118,7 @@ export async function openPlyStream(url, onHeaderProgress) {
         }
       };
 
-      return { numVertices, consume };
+      return { numVertices, numSHBases: streamSHBases, consume };
     }
     if (buf.length > 65536) throw new Error('PLY header exceeds 64 KB');
   }
@@ -125,10 +133,34 @@ export async function openPlyStream(url, onHeaderProgress) {
  * @param {number}    stride     bytes per vertex
  * @param {boolean}   hasColor
  * @param {number}    count
- * @returns {Float32Array}  count × 16 floats
+ * @returns {{ data: Float32Array, shData: Float32Array|null, numSHBases: number }}
  */
-export function decodePlyVertices(src, propMap, stride, hasColor, count) {
+export function decodePlyVertices(src, propMap, stride, hasColor, count, shDegree = 0) {
   const data = new Float32Array(count * 16);
+
+  // f_rest layout: [R bases 0..M-1], [G bases 0..M-1], [B bases 0..M-1]
+  // where M = numSHBases (3 for deg1-only, 8 for deg1+2, 15 for deg1+2+3).
+  const numSHBases = propMap['f_rest_44'] ? 15 : propMap['f_rest_23'] ? 8 : propMap['f_rest_8'] ? 3 : 0;
+  const maxFileDeg = numSHBases >= 15 ? 3 : numSHBases >= 8 ? 2 : numSHBases >= 3 ? 1 : 0;
+  const effectiveDeg = Math.min(shDegree, maxFileDeg);
+  const numBases = effectiveDeg >= 3 ? 15 : effectiveDeg >= 2 ? 8 : effectiveDeg >= 1 ? 3 : 0;
+  const hasSH = numBases > 0 && hasColor;
+
+  // Pre-build per-channel prop lookups indexed by SH basis number.
+  const rSH = [], gSH = [], bSH = [];
+  if (hasSH) {
+    const G = numSHBases, B = 2 * numSHBases;
+    for (let b = 0; b < numBases; b++) {
+      rSH[b] = propMap[`f_rest_${b}`];
+      gSH[b] = propMap[`f_rest_${G + b}`];
+      bSH[b] = propMap[`f_rest_${B + b}`];
+    }
+  }
+
+  // shData layout: for Gaussian i, basis b → shData[(i*numBases+b)*3 + channel].
+  // Matches the GPU binding: shCoeffs[gi*numBases + b] = vec3(r,g,b).
+  const shData = hasSH ? new Float32Array(count * numBases * 3) : null;
+
   for (let i = 0; i < count; i++) {
     const base = i * stride;
     const d    = i * 16;
@@ -138,9 +170,23 @@ export function decodePlyVertices(src, propMap, stride, hasColor, count) {
     data[d + 2] = readProp(src, base, propMap['z']);
 
     if (hasColor) {
-      data[d + 4] = clamp01(0.5 + SH_C0 * readProp(src, base, propMap['f_dc_0']));
-      data[d + 5] = clamp01(0.5 + SH_C0 * readProp(src, base, propMap['f_dc_1']));
-      data[d + 6] = clamp01(0.5 + SH_C0 * readProp(src, base, propMap['f_dc_2']));
+      // DC-only base color — SH higher-order terms are stored separately in shData
+      // and evaluated per-frame in the shader using the actual view direction.
+      // Left unclamped — higher-order SH terms (added in the shader) can push
+      // this back into [0,1]; clamping here first would bake in the wrong value.
+      data[d + 4] = 0.5 + SH_C0 * readProp(src, base, propMap['f_dc_0']);
+      data[d + 5] = 0.5 + SH_C0 * readProp(src, base, propMap['f_dc_1']);
+      data[d + 6] = 0.5 + SH_C0 * readProp(src, base, propMap['f_dc_2']);
+
+      if (hasSH) {
+        const sBase = i * numBases * 3;
+        for (let b = 0; b < numBases; b++) {
+          const o = sBase + b * 3;
+          shData[o + 0] = readProp(src, base, rSH[b]);
+          shData[o + 1] = readProp(src, base, gSH[b]);
+          shData[o + 2] = readProp(src, base, bSH[b]);
+        }
+      }
     } else {
       data[d + 4] = 1; data[d + 5] = 1; data[d + 6] = 1;
     }
@@ -160,7 +206,7 @@ export function decodePlyVertices(src, propMap, stride, hasColor, count) {
     data[d + 14] = rz / rl;
     data[d + 15] = rw / rl;
   }
-  return data;
+  return { data, shData, numSHBases: numBases };
 }
 
 // ── Header parsing ─────────────────────────────────────────────────────────
@@ -246,4 +292,3 @@ function readProp(view, base, prop) {
 }
 
 function sigmoid(x) { return 1 / (1 + Math.exp(-x)); }
-function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }

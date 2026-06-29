@@ -233,11 +233,22 @@ function actFrame(act, progress) {
  * Returns the scroll progress (0..1) of an element relative to the top of
  * the viewport.  0 = element top is at viewport top;
  *                1 = element bottom is at viewport top (fully scrolled past).
+ *
+ * For the last act on the page, "fully scrolled past" would need scrollY to
+ * exceed the document's max scroll by a full viewport height — unreachable —
+ * so progress would cap below 1. Clamp the act's effective bottom to the max
+ * reachable scrollY so the last act can still reach progress 1.
  */
 function getProgress(el) {
-  const top = el.getBoundingClientRect().top;
-  const h   = el.offsetHeight || 1;
-  return Math.max(0, Math.min(1, -top / h));
+  const rect = el.getBoundingClientRect();
+  if (rect.top > 0) return 0;
+  const scrollY    = window.scrollY;
+  const top        = scrollY + rect.top;
+  const h          = el.offsetHeight || 1;
+  const bottom     = top + h;
+  const maxScrollY = document.documentElement.scrollHeight - window.innerHeight;
+  const effBottom  = Math.min(bottom, Math.max(maxScrollY, top + 1));
+  return Math.max(0, Math.min(1, (scrollY - top) / (effBottom - top)));
 }
 
 // ── Pingpong transition helpers ───────────────────────────────────────────────

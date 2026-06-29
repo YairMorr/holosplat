@@ -3,7 +3,7 @@ __pycache__/
 .claude/
 
 # Scene files (kept local, not committed)
-/scenes/*.*
+/scenes/
 *.splat
 *.ply
 *.blend

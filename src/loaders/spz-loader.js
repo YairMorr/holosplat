@@ -29,20 +29,35 @@ import { fetchWithProgress } from './fetch-utils.js';
 const MAGIC    = 0x5053474E;
 const SQRT2INV = 1 / Math.SQRT2;
 
-export async function loadSpz(url, onProgress) {
+export async function loadSpz(url, onProgress, shDegree = 0) {
   const compressed = await fetchWithProgress(url, onProgress);
   const buffer     = await decompressGzip(compressed);
-  return parseSpz(buffer);
+  return parseSpz(buffer, shDegree);
 }
 
-export function parseSpz(buffer) {
+/** Decompress and parse an in-memory gzip-compressed .spz buffer (e.g. from a File). */
+export async function parseSpzGzip(compressed, shDegree = 0) {
+  const buffer = await decompressGzip(compressed);
+  return parseSpz(buffer, shDegree);
+}
+
+// Number of Gaussians decoded per main-thread slice. Large .spz files (1M+
+// points) can take seconds to decode; yielding periodically keeps the page
+// (scroll, paint, loading-bar animation) responsive during that time.
+const PARSE_CHUNK = 50000;
+
+function yieldToMain() {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+export async function parseSpz(buffer, shDegree = 0) {
   const view = new DataView(buffer);
 
   // ── Header ───────────────────────────────────────────────────────────────
   const magic          = view.getUint32(0, true);
   const version        = view.getUint32(4, true);
   const numPoints      = view.getUint32(8, true);
-  const shDegree       = view.getUint8(12);
+  const fileShDegree   = view.getUint8(12);
   const fractionalBits = view.getUint8(13);
   // flags / reserved at 14-15 (ignored for now)
 
@@ -59,15 +74,26 @@ export function parseSpz(buffer) {
   const posDiv  = 1 << fractionalBits;  // position divisor
   const rotSize = version >= 3 ? 4 : 3; // bytes per rotation
 
+  // SH-rest: the file's own per-point byte stride depends on fileShDegree
+  // (we must skip it correctly even if we only want a lower degree); what we
+  // actually decode is capped to min(requested, file's degree, 3) — degree 4
+  // (24 bases) isn't supported by our renderer's evalSH.
+  const degToBases     = deg => deg >= 4 ? 24 : deg >= 3 ? 15 : deg >= 2 ? 8 : deg >= 1 ? 3 : 0;
+  const fileNumSHBases = degToBases(fileShDegree);
+  const effectiveDeg   = Math.min(shDegree, fileShDegree, 3);
+  const numSHBases     = degToBases(effectiveDeg);
+  const hasSH          = numSHBases > 0;
+
   // ── Section offsets ───────────────────────────────────────────────────────
   const offPos   = 16;
   const offAlpha = offPos   + numPoints * 9;
   const offColor = offAlpha + numPoints * 1;
   const offScale = offColor + numPoints * 3;
   const offRot   = offScale + numPoints * 3;
-  // SH rest (if shDegree > 0): offRot + numPoints * rotSize — not used here
+  const offSH    = offRot   + numPoints * rotSize;
 
-  const data = new Float32Array(numPoints * 16);
+  const data   = new Float32Array(numPoints * 16);
+  const shData = hasSH ? new Float32Array(numPoints * numSHBases * 3) : null;
 
   for (let i = 0; i < numPoints; i++) {
     const d = i * 16;
@@ -133,28 +159,71 @@ export function parseSpz(buffer) {
     data[d + 13] = qy / ql;
     data[d + 14] = qz / ql;
     data[d + 15] = qw / ql;
+
+    // ── SH-rest (uint8 → [-1,1], basis-major RGB-interleaved — matches the
+    // reference niantic-labs/spz layout exactly, so no reordering needed) ──
+    if (hasSH) {
+      const fb = offSH + i * fileNumSHBases * 3; // file's per-point block start
+      const db = i * numSHBases * 3;
+      for (let k = 0; k < numSHBases * 3; k++) {
+        shData[db + k] = decodeSH(view.getUint8(fb + k));
+      }
+    }
+
+    if ((i + 1) % PARSE_CHUNK === 0) await yieldToMain();
   }
 
-  return { data, count: numPoints };
+  return { data, count: numPoints, shData, numSHBases };
 }
 
 // ── Binary helpers ─────────────────────────────────────────────────────────
 
-function readInt24(view, offset) {
+export function readInt24(view, offset) {
   const lo = view.getUint8(offset);
   const mi = view.getUint8(offset + 1);
   const hi = view.getInt8(offset + 2);  // signed → sign extension
   return lo | (mi << 8) | (hi << 16);
 }
 
-function signExtend10(v) {
+export function signExtend10(v) {
   // Sign-extend 10-bit integer to JS number
   return v & 0x200 ? v | 0xFFFFFC00 : v;
 }
 
+/** Inverse of encodeScale (compress.js): log-space uint8 → linear scale. */
+export function decodeScale(byte) {
+  return Math.exp((byte - 128) / 16);
+}
+
+/** Inverse of encodeSH (compress.js): matches the reference
+ *  niantic-labs/spz unquantizeSH formula exactly. */
+export function decodeSH(byte) {
+  return (byte - 128) / 128;
+}
+
+/** Inverse of encodeQuat (compress.js): smallest-3-encoded uint32 → normalized [qx,qy,qz,qw]. */
+export function decodeQuat(u32) {
+  const idx = u32 & 3;
+  const s   = SQRT2INV / 512;
+  const a   = signExtend10((u32 >>  2) & 0x3FF) * s;
+  const b   = signExtend10((u32 >> 12) & 0x3FF) * s;
+  const c   = signExtend10((u32 >> 22) & 0x3FF) * s;
+  const d   = Math.sqrt(Math.max(0, 1 - a*a - b*b - c*c));
+
+  let qx, qy, qz, qw;
+  switch (idx) {
+    case 0: qx = d; qy = a; qz = b; qw = c; break;
+    case 1: qx = a; qy = d; qz = b; qw = c; break;
+    case 2: qx = a; qy = b; qz = d; qw = c; break;
+    default: qx = a; qy = b; qz = c; qw = d;
+  }
+  const len = Math.hypot(qx, qy, qz, qw) || 1;
+  return [qx / len, qy / len, qz / len, qw / len];
+}
+
 // ── Gzip decompression (uses browser DecompressionStream API) ──────────────
 
-async function decompressGzip(buffer) {
+export async function decompressGzip(buffer) {
   if (typeof DecompressionStream === 'undefined') {
     throw new Error('DecompressionStream is not available in this environment');
   }

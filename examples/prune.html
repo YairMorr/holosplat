@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>HoloSplat – Prune & LOD</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #111; color: #eee;
+      font-family: system-ui, sans-serif;
+      min-height: 100dvh;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      gap: 20px; padding: 32px;
+    }
+    h1 { font-size: 1.1rem; font-weight: 600; color: #fff; }
+    p  { font-size: 0.82rem; color: #888; text-align: center; line-height: 1.6; max-width: 480px; }
+    a.x-link { color: #5a9aff; text-decoration: none; font-size: 0.78rem; }
+    a.x-link:hover { text-decoration: underline; }
+
+    #controls {
+      width: 100%; max-width: 520px;
+      background: #1a1a1a; border: 1px solid #333; border-radius: 8px;
+      padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .presets { display: flex; gap: 8px; flex-wrap: wrap; }
+    .presets button {
+      background: #242424; border: 1px solid #333; color: #aaa;
+      padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 0.78rem;
+    }
+    .presets button:hover { background: #2e2e2e; color: #eee; }
+    .presets button.active { background: #1a3020; border-color: #2a6a40; color: #6aaa7a; }
+    .sliders { display: flex; flex-direction: column; gap: 6px; }
+    .sliders label { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: #aaa; }
+    .sliders label span:first-child { width: 90px; flex-shrink: 0; }
+    .sliders input[type="range"] { flex: 1; }
+    .sliders .val { width: 52px; text-align: right; color: #ccc; font-variant-numeric: tabular-nums; }
+    .lod-row { display: flex; align-items: center; gap: 8px; font-size: 0.78rem; color: #aaa; border-top: 1px solid #2a2a2a; padding-top: 10px; }
+    .lod-row input[type="checkbox"] { flex-shrink: 0; }
+
+    #dropzone {
+      width: 100%; max-width: 520px;
+      border: 2px dashed #444; border-radius: 10px;
+      padding: 36px 32px; text-align: center;
+      cursor: pointer; transition: border-color .15s, background .15s;
+    }
+    #dropzone:hover, #dropzone.over { border-color: #3a7aff; background: #1a2a4a; }
+    #dropzone p { color: #666; font-size: 0.85rem; margin-top: 8px; }
+    #dropzone strong { color: #aaa; }
+    #fileInput { display: none; }
+
+    #results { width: 100%; max-width: 520px; display: flex; flex-direction: column; gap: 10px; }
+    .card {
+      background: #1a1a1a; border: 1px solid #333; border-radius: 6px;
+      padding: 12px 16px; display: flex; flex-direction: column; gap: 8px;
+    }
+    .card.error { border-color: #663; background: #1a1a10; }
+    .card .head { display: flex; align-items: center; gap: 12px; }
+    .card .name { flex: 1; font-size: 0.85rem; color: #ccc; word-break: break-all; }
+    .card .meta { font-size: 0.75rem; color: #666; white-space: nowrap; }
+    .card .err  { color: #f77; font-size: 0.75rem; }
+    .outputs { display: flex; flex-direction: column; gap: 6px; }
+    .output-row { display: flex; align-items: center; gap: 12px; padding-top: 6px; border-top: 1px solid #2a2a2a; }
+    .output-row .name { flex: 1; font-size: 0.78rem; color: #999; }
+    .output-row .sizes { font-size: 0.75rem; color: #666; white-space: nowrap; }
+    .output-row .sizes .ratio { color: #5a5; font-weight: 600; }
+    button.dl {
+      background: #3a7aff; color: #fff; border: none;
+      padding: 5px 12px; border-radius: 4px; cursor: pointer; font-size: 0.78rem;
+      white-space: nowrap;
+    }
+    button.dl:hover { background: #5590ff; }
+    .spinner { display: inline-block; width: 14px; height: 14px;
+      border: 2px solid #444; border-top-color: #3a7aff;
+      border-radius: 50%; animation: spin .6s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #saveDirRow { width: 100%; max-width: 520px; display: flex; align-items: center; gap: 8px; }
+    #saveDirRow label { font-size: 0.78rem; color: #888; white-space: nowrap; }
+    #saveDir {
+      flex: 1; background: #1a1a1a; border: 1px solid #333; border-radius: 4px;
+      color: #ddd; font-size: 0.82rem; padding: 6px 8px;
+    }
+    #saveDir:focus { outline: none; border-color: #3a7aff; }
+    .output-row .sizes .saved  { color: #5a5; font-weight: 600; }
+    .output-row .sizes .saving { color: #888; }
+  </style>
+</head>
+<body>
+  <h1>HoloSplat — Prune & LOD</h1>
+  <p>
+    Drop <strong>.spz</strong>, <strong>.splat</strong> or <strong>.ply</strong> files to remove
+    low-impact Gaussians (transparent or tiny splats) and re-export as <strong>.spz</strong>.
+    Enable LOD tiers to generate progressively lighter versions for distant viewing.
+  </p>
+  <a class="x-link" href="compress.html">→ Just need lossless .spz compression? Use the Compress tool</a>
+  <a class="x-link" href="pack.html">→ Have multiple color variants of the same model? Use the Pack Variants tool</a>
+
+  <div id="saveDirRow">
+    <label for="saveDir">Save to folder</label>
+    <input id="saveDir" type="text" placeholder="scenes/headphones (relative to project root) — leave empty to download instead" spellcheck="false">
+  </div>
+
+  <div id="controls">
+    <div class="presets">
+      <button class="preset" data-preset="light">Light</button>
+      <button class="preset" data-preset="balanced">Balanced</button>
+      <button class="preset" data-preset="aggressive">Aggressive</button>
+      <button class="preset" data-preset="mobile">Mobile</button>
+    </div>
+    <div class="sliders">
+      <label><span>min alpha</span><input type="range" id="minAlpha" min="0" max="0.2" step="0.001" value="0.02"><span class="val" id="minAlphaVal">0.020</span></label>
+      <label><span>min scale</span><input type="range" id="minScale" min="0" max="0.01" step="0.0001" value="0.0005"><span class="val" id="minScaleVal">0.0005</span></label>
+      <label><span>keep fraction</span><input type="range" id="keepFraction" min="0.05" max="1" step="0.05" value="0.7"><span class="val" id="keepFractionVal">70%</span></label>
+    </div>
+    <div class="lod-row">
+      <input type="checkbox" id="generateLods">
+      <label for="generateLods">Generate LOD tiers (100% / 80% / 60% / 40% of remaining splats) instead of a single pruned file</label>
+    </div>
+  </div>
+  <p>The <strong>Mobile</strong> preset outputs a <code>.mobile.spz</code> file — all .spz output from this tool already has spherical harmonics stripped (shDegree=0), so the mobile preset just adds aggressive pruning on top.</p>
+
+  <div id="dropzone">
+    <strong>Drop files here</strong>
+    <p>or click to select</p>
+    <input id="fileInput" type="file" accept=".spz,.splat,.ply" multiple>
+  </div>
+
+  <div id="results"></div>
+
+  <script type="module">
+    import { pruneGaussians, generateLods, PRUNE_PRESETS, compressToSpz, parseSplat, parsePly, parseSpzGzip }
+      from '../dist/holosplat.esm.js';
+
+    const dropzone     = document.getElementById('dropzone');
+    const fileInput    = document.getElementById('fileInput');
+    const results      = document.getElementById('results');
+    const minAlphaEl    = document.getElementById('minAlpha');
+    const minScaleEl    = document.getElementById('minScale');
+    const keepFractionEl = document.getElementById('keepFraction');
+    const minAlphaVal   = document.getElementById('minAlphaVal');
+    const minScaleVal   = document.getElementById('minScaleVal');
+    const keepFractionVal = document.getElementById('keepFractionVal');
+    const generateLodsEl = document.getElementById('generateLods');
+    const presetBtns    = [...document.querySelectorAll('.preset')];
+    const saveDirEl      = document.getElementById('saveDir');
+
+    saveDirEl.value = localStorage.getItem('holosplat:prune:saveDir') || '';
+    saveDirEl.addEventListener('change', () => {
+      localStorage.setItem('holosplat:prune:saveDir', saveDirEl.value.trim());
+    });
+
+    // ── Controls ──────────────────────────────────────────────────────────────
+    function syncLabels() {
+      minAlphaVal.textContent = (+minAlphaEl.value).toFixed(3);
+      minScaleVal.textContent = (+minScaleEl.value).toFixed(4);
+      keepFractionVal.textContent = Math.round(+keepFractionEl.value * 100) + '%';
+    }
+    let activePreset = null;
+    function clearPreset() { activePreset = null; presetBtns.forEach(b => b.classList.remove('active')); }
+    [minAlphaEl, minScaleEl, keepFractionEl].forEach(el =>
+      el.addEventListener('input', () => { syncLabels(); clearPreset(); }));
+
+    generateLodsEl.addEventListener('change', () => {
+      keepFractionEl.disabled = generateLodsEl.checked;
+    });
+
+    presetBtns.forEach(btn => btn.addEventListener('click', () => {
+      const preset = PRUNE_PRESETS[btn.dataset.preset];
+      minAlphaEl.value = preset.minAlpha;
+      minScaleEl.value = preset.minScale;
+      keepFractionEl.value = preset.keepFraction;
+      syncLabels();
+      clearPreset();
+      activePreset = btn.dataset.preset;
+      btn.classList.add('active');
+    }));
+
+    syncLabels();
+
+    // ── Drop / click wiring ───────────────────────────────────────────────────
+    dropzone.addEventListener('click', () => fileInput.click());
+    fileInput.addEventListener('change', e => handleFiles([...e.target.files]));
+
+    dropzone.addEventListener('dragover',  e => { e.preventDefault(); dropzone.classList.add('over'); });
+    dropzone.addEventListener('dragleave', ()  => dropzone.classList.remove('over'));
+    dropzone.addEventListener('drop', e => {
+      e.preventDefault();
+      dropzone.classList.remove('over');
+      handleFiles([...e.dataTransfer.files]);
+    });
+
+    // ── Process files ─────────────────────────────────────────────────────────
+    async function handleFiles(files) {
+      for (const file of files) {
+        const ext = file.name.split('.').pop().toLowerCase();
+        if (!['spz', 'splat', 'ply'].includes(ext)) {
+          addCard(file.name, null, null, `Unsupported format .${ext} — use .spz, .splat or .ply`);
+          continue;
+        }
+        const card = addCard(file.name, file.size, null, null, true);
+        try {
+          const buf = await file.arrayBuffer();
+          const parsed = ext === 'ply' ? parsePly(buf)
+                        : ext === 'spz' ? await parseSpzGzip(buf)
+                        : parseSplat(buf);
+          const baseName = file.name.replace(/\.(spz|splat|ply)$/i, '');
+
+          const minAlpha = +minAlphaEl.value;
+          const minScale = +minScaleEl.value;
+
+          let outputs;
+          if (generateLodsEl.checked) {
+            const lods = generateLods(parsed.data, parsed.count, { minAlpha, minScale, fractions: [1, 0.8, 0.6, 0.4] });
+            outputs = [];
+            // Tiers go in a "<name>.lods/" folder next to the source file —
+            // see device-tier.js resolveLodUrl, which probes this same path
+            // at runtime. The `download` attribute's relative path (with a
+            // slash) makes Chromium-based browsers create that subfolder
+            // under the default downloads directory automatically.
+            for (let i = 0; i < lods.length; i++) {
+              const spzBuf = await compressToSpz(lods[i].data, lods[i].count);
+              outputs.push({ name: `${baseName}.lods/${baseName}.lod${i}.spz`, count: lods[i].count, buf: spzBuf });
+            }
+          } else {
+            const keepFraction = +keepFractionEl.value;
+            const pruned = pruneGaussians(parsed.data, parsed.count, { minAlpha, minScale, keepFraction });
+            const spzBuf = await compressToSpz(pruned.data, pruned.count);
+            const suffix = activePreset === 'mobile' ? 'mobile' : 'pruned';
+            outputs = [{ name: `${baseName}.${suffix}.spz`, count: pruned.count, buf: spzBuf }];
+          }
+
+          finishCard(card, file.size, parsed.count, outputs);
+        } catch (err) {
+          errorCard(card, err.message);
+        }
+      }
+    }
+
+    // ── Card rendering ────────────────────────────────────────────────────────
+    function addCard(name, origSize, origCount, errorMsg, loading = false) {
+      const card = document.createElement('div');
+      card.className = 'card' + (errorMsg ? ' error' : '');
+      card.innerHTML = `
+        <div class="head">
+          <div class="name">${name}</div>
+          <div class="meta">${loading ? '<span class="spinner"></span>' : ''}${errorMsg ? `<span class="err">${errorMsg}</span>` : ''}</div>
+        </div>
+        <div class="outputs"></div>
+      `;
+      results.prepend(card);
+      return card;
+    }
+
+    function finishCard(card, origSize, origCount, outputs) {
+      card.querySelector('.meta').innerHTML = `${fmtCount(origCount)} splats · ${fmt(origSize)}`;
+      const outDiv = card.querySelector('.outputs');
+      const saveDir = saveDirEl.value.trim();
+      for (const out of outputs) {
+        const row = document.createElement('div');
+        row.className = 'output-row';
+        const ratio = Math.round(out.count / origCount * 100);
+        const sizesHtml = `${fmtCount(out.count)} splats <span class="ratio">(${ratio}%)</span> · ${fmt(out.buf.byteLength)}`;
+        row.innerHTML = `
+          <div class="name">${out.name}</div>
+          <div class="sizes">${sizesHtml}</div>
+          ${saveDir ? '' : '<button class="dl">Download</button>'}
+        `;
+        outDiv.appendChild(row);
+        if (saveDir) {
+          // out.name may itself include a "<name>.lods/" prefix for LOD
+          // tiers — joined with saveDir that lands exactly where
+          // device-tier.js's resolveLodUrl probes for them at runtime.
+          saveToServer(row, `${saveDir.replace(/\/+$/, '')}/${out.name}`, sizesHtml, out.buf);
+        } else {
+          row.querySelector('.dl').addEventListener('click', () => triggerDownload(out.name, out.buf));
+        }
+      }
+    }
+
+    // PUT to the dev server's /hs-api/file route (see src/server.js /
+    // server.py) — writes anywhere under the project root, creating
+    // directories as needed.
+    async function saveToServer(row, relPath, sizesHtml, buf) {
+      row.querySelector('.sizes').innerHTML = `${sizesHtml} · <span class="saving"><span class="spinner"></span> saving…</span>`;
+      try {
+        const res = await fetch(`/hs-api/file?path=${encodeURIComponent(relPath)}`, { method: 'PUT', body: buf });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        row.querySelector('.sizes').innerHTML = `${sizesHtml} · <span class="saved">✓ saved to ${relPath}</span>`;
+      } catch (err) {
+        row.querySelector('.sizes').innerHTML = `${sizesHtml} · <span class="err">save failed (${err.message})</span>`;
+        const btn = document.createElement('button');
+        btn.className = 'dl';
+        btn.textContent = 'Download instead';
+        btn.addEventListener('click', () => triggerDownload(relPath.slice(relPath.lastIndexOf('/') + 1), buf));
+        row.appendChild(btn);
+      }
+    }
+
+    function errorCard(card, errorMsg) {
+      card.classList.add('error');
+      card.querySelector('.meta').innerHTML = `<span class="err">${errorMsg}</span>`;
+    }
+
+    function fmtCount(n) {
+      return n.toLocaleString();
+    }
+
+    function fmt(bytes) {
+      return bytes >= 1_000_000
+        ? (bytes / 1_000_000).toFixed(1) + ' MB'
+        : (bytes / 1_000).toFixed(0) + ' KB';
+    }
+
+    function triggerDownload(name, buffer) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([buffer], { type: 'application/octet-stream' }));
+      a.download = name;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+  </script>
+</body>
+</html>

@@ -38,7 +38,7 @@
 import fs   from 'fs';
 import path from 'path';
 
-const SCENE_EXTS  = new Set(['.spz', '.splat', '.ply']);
+const SCENE_EXTS  = new Set(['.spz', '.splat', '.ply', '.spzv']);
 const SKIP_JSON   = new Set(['package.json', 'package-lock.json', 'tsconfig.json',
                               'tsconfig.node.json', 'jsconfig.json']);
 
@@ -71,13 +71,16 @@ export function createHsApiHandler(root = process.cwd()) {
     res.end(body);
   }
 
+  // Recursive — scene assets live in subfolders (e.g. scenes/headphones/).
   function scanDir(dir, prefix, out) {
     if (!fs.existsSync(dir)) return;
     for (const f of fs.readdirSync(dir).sort()) {
       const full = path.join(dir, f);
-      if (!fs.statSync(full).isFile()) continue;
-      const ext = path.extname(f).toLowerCase();
+      const stat = fs.statSync(full);
       const rel = prefix ? `${prefix}/${f}` : f;
+      if (stat.isDirectory()) { scanDir(full, rel, out); continue; }
+      if (!stat.isFile()) continue;
+      const ext = path.extname(f).toLowerCase();
       if (SCENE_EXTS.has(ext))  out.spz.push(rel);
       else if (ext === '.json') out.json.push(rel);
     }
@@ -91,7 +94,7 @@ export function createHsApiHandler(root = process.cwd()) {
     const params = Object.fromEntries(url.searchParams);
 
     res.setHeader('Access-Control-Allow-Origin',  '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     res.setHeader('Cache-Control', 'no-cache');
 
@@ -114,6 +117,8 @@ export function createHsApiHandler(root = process.cwd()) {
           if (fs.statSync(path.join(root, f)).isFile()) result.json.push(f);
         }
       }
+      result.spz.sort();
+      result.json.sort();
       return sendJson(res, 200, result);
     }
 
@@ -122,7 +127,11 @@ export function createHsApiHandler(root = process.cwd()) {
       const full = safePath(params.path);
       if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
       const body = fs.readFileSync(full);
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': body.length });
+      const ext  = path.extname(full).toLowerCase();
+      const mime = ext === '.html' || ext === '.htm' ? 'text/html'
+                 : ext === '.json'                   ? 'application/json'
+                 : 'application/octet-stream';
+      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': body.length });
       return res.end(body);
     }
 
@@ -138,6 +147,43 @@ export function createHsApiHandler(root = process.cwd()) {
           const dir = path.dirname(full);
           if (dir && dir !== root) fs.mkdirSync(dir, { recursive: true });
           fs.writeFileSync(full, buf);
+          sendJson(res, 200, { ok: true });
+        } catch (e) {
+          sendJson(res, 500, { error: e.message });
+        }
+      });
+      return;
+    }
+
+    // POST /html-attr  — patch data-hs-scene / data-hs attributes in an HTML source file
+    if (route === '/html-attr' && req.method === 'POST') {
+      const chunks = [];
+      req.on('data', c => chunks.push(c));
+      req.on('end', () => {
+        try {
+          const { page, id, attrs } = JSON.parse(Buffer.concat(chunks).toString());
+          if (!page || !id || !attrs) return sendJson(res, 400, { error: 'missing fields' });
+
+          // Resolve page path — strip leading slash and query string
+          const rel = page.replace(/^\//, '').split('?')[0];
+          const full = safePath(rel);
+          if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'file not found' });
+
+          let html = fs.readFileSync(full, 'utf8');
+          // Find the opening tag that contains id="<id>"
+          const idPat  = id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+          const tagRx  = new RegExp(`(<[a-zA-Z][^>]*?\\s(?:id="${idPat}")[^>]*?)(?=\\s*>)`, 's');
+          const match  = html.match(tagRx);
+          if (!match) return sendJson(res, 404, { error: `element #${id} not found in ${rel}` });
+
+          let tag = match[1];
+          for (const [name, value] of Object.entries(attrs)) {
+            const n = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            tag = tag.replace(new RegExp(`\\s+${n}(?:="[^"]*"|='[^']*')?`), '');
+            if (value != null) tag += ` ${name}="${String(value).replace(/"/g, '&quot;')}"`;
+          }
+          html = html.slice(0, match.index) + tag + html.slice(match.index + match[0].length);
+          fs.writeFileSync(full, html, 'utf8');
           sendJson(res, 200, { ok: true });
         } catch (e) {
           sendJson(res, 500, { error: e.message });

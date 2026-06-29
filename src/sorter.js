@@ -7,6 +7,10 @@
  *
  * 4 passes × 8-bit buckets.  Runs in a Web Worker so the main thread never
  * blocks on sorting.  Falls back to synchronous if Workers are unavailable.
+ *
+ * `gIndex` (optional) restricts the sort to a subset of gaussians: it's a
+ * Uint32Array of gaussian indices, one per entry in `depths`/`copy`. When
+ * omitted, the full [0, N) range is sorted (gaussian index === array index).
  */
 
 // ── Shared sort logic (used by both worker and sync fallback) ─────────────────
@@ -39,7 +43,7 @@ const WORKER_SRC = SORT_FN + `
 const u32 = new Uint32Array(1);
 const f32 = new Float32Array(u32.buffer);
 
-let keys0, keys1, idx0, idx1, counts, pfx, allocN = 0;
+let keys0, keys1, idx0, idx1, counts, pfx, allocN = -1;
 function alloc(N) {
   if (N <= allocN) return;
   allocN = N;
@@ -53,6 +57,7 @@ function alloc(N) {
 
 self.onmessage = function(e) {
   const depths = e.data.depths;
+  const gIndex = e.data.gIndex;
   const N      = e.data.N;
   alloc(N);
 
@@ -60,7 +65,7 @@ self.onmessage = function(e) {
   const dv = new DataView(depths.buffer);
   for (let i = 0; i < N; i++) {
     keys0[i] = dv.getUint32(i * 4, true) ^ 0xffffffff;
-    idx0[i]  = i;
+    idx0[i]  = gIndex ? gIndex[i] : i;
   }
 
   const sorted = radixSort32(keys0, idx0, keys1, idx1, counts, pfx, N);
@@ -80,11 +85,12 @@ function createSyncSorter(maxN) {
   const pfx    = new Uint32Array(256);
 
   // inline radixSort32
-  function sort(depths, N) {
+  function sort(depths, N, gIndex = null) {
     const dv = new DataView(depths.buffer);
     for (let i = 0; i < N; i++) {
-      keys0[i] = dv.getUint32(i * 4, true) ^ 0xffffffff;
-      idx0[i]  = i;
+      const di = gIndex ? gIndex[i] : i;
+      keys0[i] = dv.getUint32(di * 4, true) ^ 0xffffffff;
+      idx0[i]  = di;
     }
     for (let pass = 0; pass < 4; pass++) {
       const shift = pass * 8;
@@ -132,24 +138,44 @@ export function createSorter(maxN) {
     lastOrder = e.data.order;
     busy = false;
     if (queued) {
-      const { depths, N } = queued;
+      const { depths, N, gIndex } = queued;
       queued = null;
       busy = true;
-      worker.postMessage({ depths, N }, [depths.buffer]);
+      const transfer = gIndex ? [depths.buffer, gIndex.buffer] : [depths.buffer];
+      worker.postMessage({ depths, N, gIndex }, transfer);
     }
   };
 
-  return function sort(depths, N) {
+  return function sort(depths, N, gIndex = null) {
     const copy = new Float32Array(N);
-    copy.set(depths.subarray(0, N));
+    if (gIndex) {
+      for (let i = 0; i < N; i++) copy[i] = depths[gIndex[i]];
+    } else {
+      copy.set(depths.subarray(0, N));
+    }
+    const gCopy = gIndex ? gIndex.slice(0, N) : null;
 
     if (!busy) {
       busy = true;
-      worker.postMessage({ depths: copy, N }, [copy.buffer]);
+      const transfer = gCopy ? [copy.buffer, gCopy.buffer] : [copy.buffer];
+      worker.postMessage({ depths: copy, N, gIndex: gCopy }, transfer);
     } else {
-      queued = { depths: copy, N };   // drop stale request, keep latest
+      queued = { depths: copy, N, gIndex: gCopy };   // drop stale request, keep latest
     }
 
+    // lastOrder can be sized for a *previous* request's N — e.g. mask/
+    // frustum culling (Viewer#_computeActiveRanges) changes the active
+    // subset's size between ticks, and the worker hasn't caught up to the
+    // new N yet. Returning a mismatched-size array makes the caller
+    // (Renderer#updateOrder) write a partly-stale/uninitialized buffer,
+    // which renders as every instance collapsing onto gaussian 0 — i.e. the
+    // whole scene appears to vanish until the worker's next response
+    // happens to land on a matching N. Fall back to gCopy (already a valid,
+    // if depth-unsorted, set of indices to render) or plain identity so the
+    // returned array is always exactly N long.
+    if (lastOrder.length !== N) {
+      return gCopy && gCopy.length === N ? gCopy : Uint32Array.from({ length: N }, (_, i) => i);
+    }
     return lastOrder;
   };
 }
