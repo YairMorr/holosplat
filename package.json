@@ -1,6 +1,6 @@
 {
   "name": "holosplat",
-  "version": "0.6.6",
+  "version": "0.6.7",
   "description": "WebGPU Gaussian Splat viewer with scroll-driven animation and art direction editor",
   "type": "module",
   "main": "dist/holosplat.esm.js",

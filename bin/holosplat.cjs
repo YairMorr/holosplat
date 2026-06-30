@@ -10,6 +10,28 @@ const args = process.argv.slice(2);
 const cmd  = args[0];
 const flags = new Set(args.slice(1));
 
+// Catch running init/upgrade from inside the holosplat/ folder itself
+// instead of the project root — easy mistake (you're often looking right
+// at that folder when you think "let me upgrade this"), and it silently
+// creates a nested holosplat/holosplat/ that never gets served, leaving
+// the real holosplat/editor.js stale. Heuristic: cwd is named "holosplat",
+// has no package.json of its own, but its parent does — i.e. cwd looks
+// like a previously-init'd project's holosplat subfolder, not a project
+// root that just happens to be named "holosplat".
+if ((cmd === 'init' || cmd === 'upgrade')
+    && path.basename(cwd) === 'holosplat'
+    && !fs.existsSync(path.join(cwd, 'package.json'))
+    && fs.existsSync(path.join(cwd, '..', 'package.json'))) {
+  console.error(`
+  This looks like the holosplat/ folder itself, not your project root.
+  Run this one directory up instead:
+
+    cd ..
+    npx holosplat ${cmd}
+`);
+  process.exit(1);
+}
+
 // ── init ──────────────────────────────────────────────────────────────────────
 if (cmd === 'init') {
   const withServer = flags.has('--with-server');

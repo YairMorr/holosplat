@@ -503,7 +503,7 @@
     <div id="__hs-tb">
       <div id="__hs-tb-title">
         <h1>HoloSplat</h1>
-        <span id="__hs-ver">v0.6.6</span>
+        <span id="__hs-ver">v0.6.7</span>
       </div>
       <span id="__hs-st">connecting…</span>
       <span id="__hs-badge" class="off">API offline</span>
