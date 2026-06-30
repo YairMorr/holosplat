@@ -33,6 +33,21 @@
  *   GET  /hs-api/ls              List .spz/.ply/.splat and .json files
  *   GET  /hs-api/file?path=<rel> Read a file (relative to project root)
  *   PUT  /hs-api/file?path=<rel> Write a file
+ *   POST /hs-api/html-attr       Patch attributes on a tag in an HTML source file
+ *   POST /hs-api/init-player     Scaffold a blank player() call into a page with none
+ *   POST /hs-api/js-sh           Patch the `sh:` property in a player({...}) call
+ *   POST /hs-api/js-anim         Patch the `animation:` property
+ *   POST /hs-api/js-parts        Patch the `parts:` property
+ *   POST /hs-api/js-partsDir     Patch the `partsDir:` property
+ *   POST /hs-api/js-zIndex       Patch the `zIndex:` property
+ *   POST /hs-api/js-aaDilation   Patch the `aaDilation:` property
+ *   POST /hs-api/js-scenes       Patch the `scenes:` property
+ *   POST /hs-api/js-masks        Patch the `masks:` property
+ *   POST /hs-api/js-clips        Patch the `clips:` property
+ *
+ * These mirror server.py's routes of the same name — see that file for the
+ * canonical implementation/comments; this is a straight Node.js port so both
+ * server.py and this Node middleware support the full ?hs overlay editor.
  */
 
 import fs   from 'fs';
@@ -69,6 +84,76 @@ export function createHsApiHandler(root = process.cwd()) {
       'Content-Length': Buffer.byteLength(body),
     });
     res.end(body);
+  }
+
+  // Resolve an hs-api request's `page` field (leading slash + query string
+  // stripped) to a safe path, or null. Shared by every js-* / html-attr /
+  // init-player route below.
+  function pagePath(page) {
+    return safePath((page || '').replace(/^\//, '').split('?')[0]);
+  }
+
+  // Detect the indentation used by the `animation:` line in a player({...})
+  // call (or fall back to 6 spaces) — every js-* route lines new properties
+  // up with the rest of the call.
+  function detectIndent(html) {
+    const m = /^([ \t]*)animation\s*:/m.exec(html);
+    return m ? m[1] : '      ';
+  }
+
+  // Replace a `player({...})` config property with `newLine`.
+  //
+  // Removes every existing line matching `removeRe` first (heals duplicate
+  // lines left behind by earlier saves), then inserts `newLine` once at the
+  // first matching location in `insertRes` — regexes for "insert after this
+  // line", or starting with `\n` to mean "insert before this match" (used
+  // for the closing `});`). Mirrors server.py's _set_js_config_line.
+  function setJsConfigLine(html, removeRe, newLine, insertRes) {
+    const updated = html.replace(removeRe, '');
+    for (const re of insertRes) {
+      const m = re.exec(updated);
+      if (m) {
+        const insertBefore = re.source.startsWith('\\n');
+        const ins = insertBefore ? m.index + 1 : m.index + m[0].length;
+        return updated.slice(0, ins) + newLine + '\n' + updated.slice(ins);
+      }
+    }
+    return updated;
+  }
+
+  // Shared insert-anchor patterns, in priority order, for properties that
+  // can follow animation:/flipY:/scenes: or otherwise land right before the
+  // call's closing `});`.
+  const ANIM_FLIPY_SCENES_CLOSE = [
+    /[ \t]*animation\s*:[^\n]*\n/m,
+    /[ \t]*flipY\s*:[^\n]*\n/m,
+    /[ \t]*scenes\s*:[^\n]*\n/m,
+    /\n[ \t]*\}\s*\)\s*;/m,
+  ];
+  const ANIM_CLOSE = [
+    /[ \t]*animation\s*:[^\n]*\n/m,
+    /\n[ \t]*\}\s*\)\s*;/m,
+  ];
+
+  // Read a request body to completion and parse it as JSON; calls
+  // `handler(body, req, res)` with the parsed object, or sends a 400 on
+  // invalid JSON.
+  function withJsonBody(req, res, handler) {
+    const chunks = [];
+    req.on('data', c => chunks.push(c));
+    req.on('end', () => {
+      let body;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString());
+      } catch {
+        return sendJson(res, 400, { error: 'invalid JSON' });
+      }
+      try {
+        handler(body);
+      } catch (e) {
+        sendJson(res, 500, { error: e.message });
+      }
+    });
   }
 
   // Recursive — scene assets live in subfolders (e.g. scenes/headphones/).
@@ -188,6 +273,214 @@ export function createHsApiHandler(root = process.cwd()) {
         } catch (e) {
           sendJson(res, 500, { error: e.message });
         }
+      });
+      return;
+    }
+
+    // POST /init-player — scaffold a blank player() call into a page with
+    // none yet (see server.py's _api_init_player for the canonical docs).
+    if (route === '/init-player' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        if (/\bplayer\s*\(/.test(html)) return sendJson(res, 409, { error: 'page already has a player() call' });
+        const bodyClose = /<\/body\s*>/i.exec(html);
+        if (!bodyClose) return sendJson(res, 400, { error: 'no </body> tag found' });
+        const snippet =
+          '\n  <div id="hs-main" style="position:fixed;inset:0;z-index:0"></div>\n' +
+          '  <script type="module">\n' +
+          "    import { player } from '/dist/holosplat.esm.js';\n" +
+          "    const api = player('#hs-main', {\n" +
+          '    });\n' +
+          '  </script>\n';
+        html = html.slice(0, bodyClose.index) + snippet + html.slice(bodyClose.index);
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-sh — patch the `sh:` (global SH degree) property
+    if (route === '/js-sh' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, sh }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent = detectIndent(html);
+        const newLine = `${indent}sh: ${parseInt(sh, 10) || 0}, // hs-sh`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*sh\s*:\s*\d+[^\n]*\/\/\s*hs-sh[^\n]*\n?/gm,
+          newLine,
+          ANIM_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-anim — patch the `animation:` (animation JSON URL) property
+    if (route === '/js-anim' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, url }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const escaped = (url || '').replace(/'/g, "\\'");
+        const newLine = `${indent}animation: '${escaped}',`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*animation\s*:\s*(['"])[^'"]*\1[^\n]*\n?/gm,
+          newLine,
+          ANIM_FLIPY_SCENES_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-parts — patch the `parts:` (multi-file scene map) property
+    if (route === '/js-parts' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, parts }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const newLine = `${indent}parts: ${JSON.stringify(parts ?? {})}, // hs-parts`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*parts\s*:\s*\{[^}]*\}[^\n]*\n?/gm,
+          newLine,
+          ANIM_FLIPY_SCENES_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-partsDir — patch the `partsDir:` property
+    if (route === '/js-partsDir' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, partsDir }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const escaped = (partsDir || '').replace(/'/g, "\\'");
+        const newLine = `${indent}partsDir: '${escaped}',`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*partsDir\s*:\s*(['"])[^'"]*\1[^\n]*\n?/gm,
+          newLine,
+          ANIM_FLIPY_SCENES_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-zIndex — patch the `zIndex:` (player stacking order) property
+    if (route === '/js-zIndex' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, zIndex }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const zi      = parseInt(zIndex, 10);
+        const newLine = `${indent}zIndex: ${Number.isFinite(zi) ? zi : 5}, // hs-zi`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*zIndex\s*:\s*-?\d+[^\n]*\/\/\s*hs-zi[^\n]*\n?/gm,
+          newLine,
+          ANIM_FLIPY_SCENES_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-aaDilation — patch the `aaDilation:` (AA covariance dilation) property
+    if (route === '/js-aaDilation' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, aaDilation }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const aa      = Math.round((parseFloat(aaDilation) || 0.15) * 10000) / 10000;
+        const newLine = `${indent}aaDilation: ${aa}, // hs-aa`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*aaDilation\s*:\s*[0-9.]+[^\n]*\/\/\s*hs-aa[^\n]*\n?/gm,
+          newLine,
+          ANIM_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-scenes — patch the `scenes:` (per-marker scroll config) property
+    if (route === '/js-scenes' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, scenes }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const newLine = `${indent}scenes: ${JSON.stringify(scenes ?? {})}, // hs-scenes`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*scenes\s*:[^\n]*\/\/\s*hs-scenes[^\n]*\n?/gm,
+          newLine,
+          ANIM_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-masks — patch the `masks:` (mask volume feather overrides) property
+    if (route === '/js-masks' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, masks }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const newLine = `${indent}masks: ${JSON.stringify(masks ?? {})}, // hs-masks`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*masks\s*:[^\n]*\/\/\s*hs-masks[^\n]*\n?/gm,
+          newLine,
+          ANIM_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
+      });
+      return;
+    }
+
+    // POST /js-clips — patch the `clips:` (asset clip file list) property
+    if (route === '/js-clips' && req.method === 'POST') {
+      withJsonBody(req, res, ({ page, clips }) => {
+        const full = pagePath(page);
+        if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+        let html = fs.readFileSync(full, 'utf8');
+        const indent  = detectIndent(html);
+        const newLine = `${indent}clips: ${JSON.stringify(clips ?? [])}, // hs-clips`;
+        html = setJsConfigLine(
+          html,
+          /^[ \t]*clips\s*:[^\n]*\/\/\s*hs-clips[^\n]*\n?/gm,
+          newLine,
+          ANIM_CLOSE
+        );
+        fs.writeFileSync(full, html, 'utf8');
+        sendJson(res, 200, { ok: true });
       });
       return;
     }
