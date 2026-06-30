@@ -67,7 +67,13 @@ player('#scene', {
 });
 ```
 
-`linkedId` is the id of the DOM element (a `.hs-zone`-style scroll container) that drives that scene. See `src/player.js`'s `setupScrollPlayback` for the full set of recognised per-scene keys (`playback`, `pingpong`, `playOnce`, `blendIn`, `blendOut`).
+`linkedId` is the id of the DOM element (the scroll container) that drives that scene. `setupScrollPlayback` itself just does `document.getElementById(cfg.linkedId)` — any id works at runtime — but **give every linkable scroll-zone element `class="hs-zone"` too**:
+
+```html
+<div id="hero-section" class="hs-zone" style="height:300vh">...</div>
+```
+
+The editor's "html element" picker (Scenes tab → linkedId dropdown) only lists `[id].hs-zone` elements — without that class, every id on the page (nav links, buttons, form fields) would show up as a candidate. Keep ids free-form/human-readable (matching Blender marker names, e.g. `hero-section`); `hs-zone` is purely the opt-in marker, it has no required naming pattern itself. See `src/player.js`'s `setupScrollPlayback` for the full set of recognised per-scene keys (`playback`, `pingpong`, `playOnce`, `blendIn`, `blendOut`).
 
 ## Scene format preference
 

@@ -1538,8 +1538,13 @@
   }
 
   // All page elements with IDs that aren't part of the editor UI.
+  // Only elements explicitly marked class="hs-zone" are eligible as a
+  // scene's linked scroll container — without this, every id on the page
+  // (nav links, buttons, form fields, ...) would show up in the "html
+  // element" picker. ids stay free-form/human-readable (e.g. matching
+  // Blender marker names); hs-zone is the opt-in marker. See CLAUDE.md.
   function scanPageEls() {
-    return Array.from(document.querySelectorAll('[id]'))
+    return Array.from(document.querySelectorAll('[id].hs-zone'))
       .filter(e => !e.id.startsWith('__hs-') && e.id)
       .map(e => ({ id: e.id, tag: e.tagName.toLowerCase() }));
   }
