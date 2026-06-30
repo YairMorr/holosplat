@@ -790,21 +790,6 @@ export function player(container, opts = {}) {
       if (!navigator.gpu) showError('WebGPU not supported. Use Chrome 113+ or Edge 113+.');
     });
 
-  // Inject overlay when ?hs is in the URL (dev only). The full art-direction
-  // editor is desktop-only; on touch/narrow viewports load the lightweight
-  // stats overlay instead (see holosplat/stats.js).
-  if (typeof location !== 'undefined' &&
-      new URLSearchParams(location.search).has('hs') &&
-      !document.getElementById('__hs-script')) {
-    const isMobile = window.matchMedia('(pointer: coarse)').matches
-      || window.matchMedia('(max-width: 768px)').matches
-      || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
-    const s = document.createElement('script');
-    s.id  = '__hs-script';
-    s.src = isMobile ? '/holosplat/stats.js' : '/holosplat/editor.js';
-    document.head.appendChild(s);
-  }
-
   return api;
 }
 
@@ -820,10 +805,31 @@ function autoInit() {
   });
 }
 
+// ── ?hs overlay auto-injection ───────────────────────────────────────────────
+// Runs once per page load, independent of whether a player() exists on the
+// page yet — any page on a site can be opened with ?hs and the overlay
+// editor's "Init page" button (see holosplat/editor.js) writes a blank
+// player() call into the page's source if none is found. The full
+// art-direction editor is desktop-only; on touch/narrow viewports load the
+// lightweight stats overlay instead (see holosplat/stats.js).
+function injectHsOverlay() {
+  if (typeof location === 'undefined') return;
+  if (!new URLSearchParams(location.search).has('hs')) return;
+  if (document.getElementById('__hs-script')) return;
+  const isMobile = window.matchMedia('(pointer: coarse)').matches
+    || window.matchMedia('(max-width: 768px)').matches
+    || /Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '');
+  const s = document.createElement('script');
+  s.id  = '__hs-script';
+  s.src = isMobile ? '/holosplat/stats.js' : '/holosplat/editor.js';
+  document.head.appendChild(s);
+}
+
 if (typeof document !== 'undefined') {
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', autoInit);
+    document.addEventListener('DOMContentLoaded', () => { autoInit(); injectHsOverlay(); });
   } else {
     autoInit();
+    injectHsOverlay();
   }
 }

@@ -103,6 +103,10 @@ export class Animation {
     // without needing edge-triggered crossing detection.
     this.stateCalls = data.stateCalls ?? [];
 
+    // Named property bags (e.g. a "color" hue/sat/val tweak) — see
+    // blender/_holosplat_export_lib.py's "property: <name>" Empty convention.
+    this.properties = data.properties ?? {};
+
     // Typed array: 6 floats per frame [ex ey ez fx fy fz]
     this._frames  = new Float32Array(data.frames);
 

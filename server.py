@@ -3,15 +3,17 @@
 HoloSplat local dev server.
 
 - Serves the entire project with CORS headers so WebGPU can load scene files.
-- Exposes a small /hs-api for the /holosplat editor to read and write files.
+- Exposes a small /hs-api for the ?hs overlay editor to read and write files.
 - Put .spz / .splat / .ply scene files in the scenes/ folder.
 
 Usage:
     python server.py [port]       (default port: 8080)
 
-Then open:
-    http://localhost:8080/examples/viewer.html
-    http://localhost:8080/holosplat/
+Then open any page with ?hs appended to its URL to enter the editor, e.g.:
+    http://localhost:8080/examples/viewer.html?hs
+
+If the page has no player() call yet, the editor's Tools tab lets you
+create one ("Init page").
 
 Scene files are accessible at:
     http://localhost:8080/scenes/your-file.spz
@@ -113,6 +115,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         elif parsed.path == '/hs-api/js-zIndex':    self._api_js_zIndex()
         elif parsed.path == '/hs-api/js-aaDilation': self._api_js_aaDilation()
         elif parsed.path == '/hs-api/js-clips':     self._api_js_clips()
+        elif parsed.path == '/hs-api/init-player':  self._api_init_player()
         else: self._json(404, {'error': 'not found'})
 
     # ── Helpers ────────────────────────────────────────────────────────────
@@ -486,6 +489,44 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     r'(\n[ \t]*\}\s*\)\s*;)',
                 ]
             )
+            with open(full, 'w', encoding='utf-8') as f:
+                f.write(updated)
+        self._json(200, {'ok': True})
+
+    def _api_init_player(self):
+        """Scaffold a blank player() call into a page that has none yet.
+
+        Used by the ?hs overlay editor's "Init page" button (Tools tab) when
+        it can't find any registered player on the current page — writes a
+        container + <script type="module"> player(...) call right before
+        </body> so it persists across reload (the editor then reloads to
+        connect to the real, freshly-booted player).
+        """
+        try:
+            body = json.loads(self._read_body())
+        except Exception:
+            self._json(400, {'error': 'invalid JSON'}); return
+        page = body.get('page', '')
+        full = self._safe(page.lstrip('/').split('?')[0])
+        if not full or not os.path.isfile(full):
+            self._json(404, {'error': 'not found'}); return
+        with _file_lock:
+            with open(full, encoding='utf-8') as f:
+                html = f.read()
+            if re.search(r'\bplayer\s*\(', html):
+                self._json(409, {'error': 'page already has a player() call'}); return
+            body_close = re.search(r'</body\s*>', html, re.IGNORECASE)
+            if not body_close:
+                self._json(400, {'error': 'no </body> tag found'}); return
+            snippet = (
+                '\n  <div id="hs-main" style="position:fixed;inset:0;z-index:0"></div>\n'
+                '  <script type="module">\n'
+                "    import { player } from '/dist/holosplat.esm.js';\n"
+                "    const api = player('#hs-main', {\n"
+                '    });\n'
+                '  </script>\n'
+            )
+            updated = html[:body_close.start()] + snippet + html[body_close.start():]
             with open(full, 'w', encoding='utf-8') as f:
                 f.write(updated)
         self._json(200, {'ok': True})

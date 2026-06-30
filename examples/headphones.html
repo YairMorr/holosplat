@@ -115,10 +115,10 @@
       flipY: true,
       animation: '/scenes/headphones/website.animation.json',
       clips: [{"url":"/scenes/headphones/headphones-rig.json","splatsDir":"/scenes/headphones","defaults":{"color":"blue","fold":"unfolded"}},{"url":"/scenes/headphones/case-rig.json","splatsDir":"/scenes/headphones","defaults":{"lid":"closed"}}], // hs-clips
+      sh: 3, // hs-sh
       scenes: {"intro":{"linkedId":"hero-section","playback":"auto","playOnce":true},"hero-section":{"linkedId":"hero-section","playback":"auto","waitForTimeline":true,"pingpong":true,"blendOut":46,"pan":{"enabled":true}},"promo-transition":{"linkedId":"promo-transition","blendIn":33},"promo-video":{"linkedId":"promo-video"},"features-transition":{"linkedId":"features-transition"},"feature-01":{"linkedId":"feature-01","waitForTimeline":true},"feature-02-transition":{"linkedId":"feature-02-transition"},"feature-02":{"linkedId":"feature-02"},"feature-03-transition":{"linkedId":"feature-03-transition"},"feature-03":{"linkedId":"feature-03"},"color-choices-transition":{"linkedId":"color-choices-transition"},"color-choices":{"linkedId":"color-choices"},"case":{"linkedId":"case"},"end":{}}, // hs-scenes
       masks: {"headphones":{"feather":0.18},"headphones..color=yellow":{"feather":0.49},"headphones..color=purple":{"feather":0.49},"headphones..color=orange":{"feather":0.49},"headphones..color=blue":{"feather":0.49}}, // hs-masks
       aaDilation: 0.5, // hs-aa
-      sh: 3, // hs-sh
       partsDir: '/scenes/headphones',
       gpuSort: true, // GPU compute-shader radix sort — validated on Pixel 7 with LOD1 scene
     });

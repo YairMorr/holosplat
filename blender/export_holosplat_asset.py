@@ -67,6 +67,24 @@ Any "HoloSplat Parts" Empty with at least one keyframe inside [.in, .out] is
 included in that clip automatically — so multiple parts can move together
 for one clip just by all having keyframes in that range.
 
+PROPERTIES (named bags of float values — e.g. a hue/sat/val color tweak)
+───────────────────────────────────────────────────────────────────────────
+Put an Empty in a collection named "properties" (create it if it doesn't
+exist), and name the Empty "property: <name>" — e.g. "property: color".
+Add Custom Properties to that Empty (Object Properties panel → Custom
+Properties → +), one per float value you want to export, e.g.:
+
+    property: color   (Empty, in "properties")
+      custom properties:  hue = 280.0
+                           sat = 1.0
+                           val = 1.0
+
+Exports as data["properties"]["color"] = {"hue": 280.0, "sat": 1.0, "val": 1.0}.
+Non-numeric custom properties are ignored. Add as many "property: <name>"
+Empties as you like — this is generic key/value storage, not tied to any
+specific feature; what reads a given name/key at runtime decides what it
+means.
+
 REFERENCE OBJECTS (ignored entirely)
 ─────────────────────────────────────
 Same convention as export_holosplat.py: put reference-only objects (and all

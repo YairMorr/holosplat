@@ -5,7 +5,7 @@
  * Upload happens once (gaussians); order buffer is updated every frame.
  *
  * Buffer layout (must match src/shaders.js):
- *   Uniforms  : 160 bytes (40 × f32)
+ *   Uniforms  : 192 bytes (48 × f32)
  *   Gaussians : N × 64 bytes (16 × f32 each)
  *   Order     : N × 4 bytes (u32 indices, sorted back-to-front)
  */
@@ -52,7 +52,8 @@ const U_FOCAL     = 34;  // vec2 (2 floats)
 const U_PARAMS    = 36;  // vec4 (4 floats), .x = splatScale  .w = radiusCap
 const U_SH_PARAMS   = 40;  // vec4 (4 floats), .x = shDegree  .y = numSHBases  .z = aaDilation
 const U_AA_DILATION = 42;  // within shParams.z
-const U_SIZE        = 44;  // total floats → 176 bytes
+const U_COLOR_PARAMS = 44; // vec4 (4 floats), .x = hueShift (turns)  .y = satMul  .z = valMul
+const U_SIZE          = 48;  // total floats → 192 bytes
 
 export class Renderer {
   constructor(canvas, background) {
@@ -139,6 +140,9 @@ export class Renderer {
     this._uniforms[U_PARAMS + 3] = 1.0;  // radiusCap = 1.0 × viewport.y (safety net, not a routine constraint — see Viewer)
     // shParams: degree=0, numBases=0 (no SH), aaDilation=0.3 (matches PlayCanvas/SuperSplat's gsplat shader)
     this._uniforms[U_AA_DILATION] = 0.3;
+    // colorParams: hueShift=0, satMul=1, valMul=1 — identity (no-op in the shader's uniform branch)
+    this._uniforms[U_COLOR_PARAMS + 1] = 1.0;
+    this._uniforms[U_COLOR_PARAMS + 2] = 1.0;
 
     this._numSplats = 0;
     this._maskWarned = new Set();
@@ -436,6 +440,21 @@ export class Renderer {
 
   setAaDilation(v) {
     this._uniforms[U_AA_DILATION] = v;
+  }
+
+  /** Hue rotation applied to every splat's RGB, in degrees (0 = no-op). See shaders.js colorParams. */
+  setHueShift(deg) {
+    this._uniforms[U_COLOR_PARAMS] = (deg / 360) % 1;
+  }
+
+  /** HSV saturation multiplier applied to every splat (1 = no-op). */
+  setSaturation(mul) {
+    this._uniforms[U_COLOR_PARAMS + 1] = mul;
+  }
+
+  /** HSV value (brightness) multiplier applied to every splat (1 = no-op). */
+  setValue(mul) {
+    this._uniforms[U_COLOR_PARAMS + 2] = mul;
   }
 
   /** TEMP debug instrumentation — see shaders.js binding(7). Set the

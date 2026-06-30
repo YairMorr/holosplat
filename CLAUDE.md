@@ -22,8 +22,7 @@ Source lives in `src/`. Entry point is `src/index.js`. Bundle target is browser 
 | `src/scroll-scene.js` | `scrollScene()` — maps `.hs-act`/`.hs-hold` DOM to animation frames |
 | `src/animation.js` | `Animation` — parses Blender JSON, seekFrame, tick |
 | `src/server.js` | `createHsApiHandler()` — Express/Vite/Next.js middleware for editor API |
-| `holosplat/index.html` | Art-direction editor UI (served at `/holosplat/`, never deployed) |
-| `holosplat/editor.js` | Desktop `?hs` overlay — art-direction editor |
+| `holosplat/editor.js` | Desktop `?hs` overlay — art-direction editor (never deployed) |
 | `holosplat/stats.js` | Mobile/touch `?hs` overlay — lightweight fps/splat-count/SH/scene readout |
 | `bin/holosplat.cjs` | `npx holosplat init` CLI |
 | `server.py` | Python dev server (adds `/hs-api` routes for the editor) |
@@ -50,23 +49,25 @@ Flat `Float32Array`, 16 floats per splat:
 [12..15] qx, qy, qz, qw  rotation quaternion (normalised)
 ```
 
-## hs-config.json (managed by the editor)
+## Scene/scroll config (managed by the editor)
 
-```json
-{
-  "version": 1,
-  "scene": "scenes/scene.spz",
-  "animation": "scenes/anim.json",
-  "acts": [
-    { "id": "intro",   "type": "act",       "from": "intro",          "to": "pingpong-start", "height": 200 },
-    { "id": "loop",    "type": "pingpong",   "from": "pingpong-start", "to": "pingpong-end",   "height": 150 },
-    { "id": "explore", "type": "freecamera", "from": "freecamera-start","to":"freecamera-end", "height": 120 },
-    { "id": "outro",   "type": "hold",       "frame": "final-marker",                          "height": 100 }
-  ]
-}
+There is no separate config file — all config lives in the `player({...})` call in the page's own source (see `examples/headphones.html`). The editor patches this call in place via the `/hs-api/js-*` routes (regex-anchored on the `player(` call's closing `});`).
+
+`scenes` is keyed by Blender timeline marker name and maps each marker to a scroll zone:
+
+```js
+player('#scene', {
+  animation: '/scenes/anim.json',     // hs-anim
+  scenes: {                           // hs-scenes
+    'hero-section': { linkedId: 'hero-section', playback: 'auto', pingpong: true, blendOut: 46 },
+    'feature-01':   { linkedId: 'feature-01' },
+  },
+  masks: { 'headphones': { feather: 0.18 } },  // hs-masks — mask volume name → feather
+  sh: 3,                                        // hs-sh — global SH degree
+});
 ```
 
-`from`/`to`/`frame` reference Blender timeline marker names exported in the animation JSON.
+`linkedId` is the id of the DOM element (a `.hs-zone`-style scroll container) that drives that scene. See `src/player.js`'s `setupScrollPlayback` for the full set of recognised per-scene keys (`playback`, `pingpong`, `playOnce`, `blendIn`, `blendOut`).
 
 ## Scene format preference
 
@@ -74,9 +75,10 @@ Always prefer `.spz` over `.ply` or `.splat` when recommending or generating sce
 
 ## Editor
 
-The `/holosplat` editor is a standalone HTML page that:
-- Is served locally but **excluded from all deployments** (`.vercelignore`)
-- Reads/writes `hs-config.json` via the `/hs-api` routes
-- Shows the Blender marker list, lets you assign markers to scroll acts, drag to set heights
+The editor (`holosplat/editor.js`) is not a standalone page — it's an overlay injected into whichever page you open with `?hs` in the URL, regardless of whether that page has a `player()` call yet:
+- Never deployed — only loads when `?hs` is present
+- Reads/writes the page's own `player({...})` call via the `/hs-api/js-*` routes
+- Three tabs: **Scenes** (per-marker scene cards), **Setup** (render/file/3D-scene settings), **Tools** (utility links + **Init page**)
+- If no player is found on the page, the editor disables Scenes/Setup and parks on Tools — **Init page** writes a blank `player()` scaffold into the page's HTML and reloads to connect
 
 Never include `holosplat/` in production builds or deploy it.

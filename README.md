@@ -27,9 +27,8 @@ WebGPU Gaussian Splat viewer with scroll-driven animation, an art-direction edit
   - [Adding callout anchors](#adding-callout-anchors)
   - [Coordinate systems and GS object](#coordinate-systems-and-gs-object)
 - [Art-direction editor](#art-direction-editor)
-  - [Starting the editor](#starting-the-editor)
+  - [Opening the editor](#opening-the-editor)
   - [Editor workflow](#editor-workflow)
-- [hs-config.json reference](#hs-configjson-reference)
 - [Node.js server middleware](#nodejs-server-middleware)
 - [Animated multi-part scenes](#animated-multi-part-scenes)
 - [Building the library](#building-the-library)
@@ -39,33 +38,33 @@ WebGPU Gaussian Splat viewer with scroll-driven animation, an art-direction edit
 
 ## How it works
 
-A HoloSplat scene has three parts:
+A HoloSplat scene has two parts:
 
 1. **A splat file** (`.spz`, `.ply`, or `.splat`) — the 3D Gaussian Splat capture.
 2. **An animation JSON** — exported from Blender; contains a per-frame camera path, FOV, timeline markers, and optional callout positions.
-3. **`hs-config.json`** — maps Blender timeline markers to scroll acts, and sets the scroll height for each act. Written by the editor.
 
-At runtime, `scrollScene()` maps the visitor's scroll position to a frame number. The player seeks the animation to that frame, sets the camera, and renders the splat.
+Scroll position maps to a frame number through one of two equivalent paths — there's no separate config file:
+
+- **Hand-authored markup** — `.hs-act`/`.hs-hold` elements with `data-from`/`data-to`/`data-frame` attributes, parsed by `scrollScene()` (see [Scroll-driven animation](#scroll-driven-animation)).
+- **`scenes` config** — a `markerName → { linkedId, ... }` map passed straight into the `player({...})` call in your page's source, linking each Blender marker to an existing scroll element (see [Art-direction editor](#art-direction-editor)). This is what the `?hs` overlay editor reads and writes live, directly in that source file.
+
+Either way, the player seeks the animation to the resulting frame, sets the camera, and renders the splat.
 
 ```
 scroll position
       │
       ▼
- hs-config.json   ← built in the editor
- (acts + heights)
+  frame number     ← .hs-act / .hs-hold markup, or `scenes` config in player()
       │
       ▼
-  frame number
-      │
-      ▼
- animation.json   ← exported from Blender
+ animation.json    ← exported from Blender
  (eye + forward per frame)
       │
       ▼
   camera matrices
       │
       ▼
- WebGPU renderer  ← splat file (.spz / .ply / .splat)
+ WebGPU renderer   ← splat file (.spz / .ply / .splat)
 ```
 
 ---
@@ -86,7 +85,7 @@ python server.py          # → http://localhost:8080
 node build.js --watch
 ```
 
-After `init`, open `http://localhost:8080/holosplat/` for the art-direction editor.
+After `init`, open any page on `http://localhost:8080` with `?hs` appended to its URL (e.g. `http://localhost:8080/examples/viewer.html?hs`) for the art-direction editor. If the page has no `player()` call yet, the editor's Tools tab lets you create one.
 
 ---
 
@@ -104,10 +103,11 @@ It serves:
 | Path | What |
 |------|------|
 | `/` | Project root (static files) |
-| `/holosplat/` | Art-direction editor UI |
 | `/scenes/` | Scene and animation files |
 | `/hs-api/ls` | Lists loadable files for the editor |
 | `/hs-api/file?path=…` | Read / write files (GET / PUT) |
+
+The art-direction editor itself isn't a separate page — append `?hs` to any page's URL to open it as an overlay (see [Editor](#editor) below).
 
 The `scenes/` folder is created automatically if it doesn't exist. Put your `.spz`, `.ply`, `.splat`, and `.json` files there.
 
@@ -479,7 +479,7 @@ Frame numbers are **0-based relative to `FRAME_START`**.
 
 #### Scroll-act markers (any name you choose)
 
-These are plain markers with no special naming rules. You reference them in `data-from`, `data-to`, `data-frame`, and in `hs-config.json`.
+These are plain markers with no special naming rules. You reference them in `data-from`, `data-to`, `data-frame`, or as keys in a `scenes` config passed to `player()`.
 
 | Typical name | Convention |
 |---|---|
@@ -561,80 +561,29 @@ If you load the splat with `flipY: true` in the player, also set `FLIP_Y = True`
 
 ## Art-direction editor
 
-The editor is a local web app served at `/holosplat/`. It is **never deployed** — it is excluded from all production builds.
+The editor is an overlay, not a separate page — it's injected into whichever page you open. It's **never deployed**; it only loads when `?hs` is present in the URL.
 
-### Starting the editor
+### Opening the editor
 
 ```bash
 python server.py
-# then open: http://localhost:8080/holosplat/
+# then open any page with ?hs appended, e.g.:
+# http://localhost:8080/examples/headphones.html?hs
 ```
 
 The editor needs the `/hs-api` routes to read and write files. `server.py` provides them. If you're using a Node.js server instead, see [Node.js server middleware](#nodejs-server-middleware).
 
+On touch/narrow viewports a lightweight read-only stats overlay loads instead of the full editor (see `holosplat/stats.js`).
+
 ### Editor workflow
 
-1. **Load files** — Enter paths to your scene file and animation JSON in the Files panel (relative to the project root, e.g. `scenes/desk.spz`). Click the reload arrows.
+The panel has three tabs:
 
-2. **Preview** — The scene renders in the right panel. Use the scrubber at the bottom to seek through frames. The marker list on the left shows all markers exported from Blender.
+- **Scenes** — one card per Blender marker in the loaded animation. Configure playback mode, pingpong, blend in/out, and which scroll element each scene is linked to (`linkedId`). All config lives in the `player({...})` call in the page's source — every change here saves back to that file via `/hs-api/js-*` (debounced; the status line shows API online/offline).
+- **Setup** — render settings (SH degree, AA dilation), the main animation/parts-directory paths, asset clips, and live 3D-scene readouts (camera, focal point, mask volumes).
+- **Tools** — utility links (Compress, Prune/LOD, Pack Variants) and **Init page**.
 
-3. **Build the timeline** — Use the `+ Act`, `+ Hold`, `+ Pingpong`, `+ Freecam` buttons to add acts.
-
-4. **Assign markers** — Each act row has dropdowns for the from/to/frame markers. Select the Blender markers you want each act to span.
-
-5. **Set heights** — Drag the height field (the number at the right of each act row) to set how many viewport heights of scroll that act takes.
-
-6. **Save** — Click **Save** to write `hs-config.json` back to the server. The dot indicator in the title turns on when there are unsaved changes.
-
-When the API server is offline (no `server.py` running), the Save button becomes **Export** and downloads a `hs-config.json` file instead.
-
----
-
-## hs-config.json reference
-
-```json
-{
-  "version": 1,
-  "scene": "scenes/scene.spz",
-  "animation": "scenes/anim.json",
-  "acts": [
-    {
-      "id": "intro",
-      "type": "act",
-      "from": "intro",
-      "to": "desk_reveal",
-      "height": 300
-    },
-    {
-      "id": "hold1",
-      "type": "hold",
-      "frame": "desk_reveal",
-      "height": 120
-    },
-    {
-      "id": "loop",
-      "type": "pingpong",
-      "from": "pingpong-start",
-      "to": "pingpong-end",
-      "height": 200
-    },
-    {
-      "id": "explore",
-      "type": "freecamera",
-      "from": "freecam-start",
-      "to": "freecam-end",
-      "height": 150
-    }
-  ]
-}
-```
-
-| Field | Description |
-|-------|-------------|
-| `type` | `"act"` \| `"hold"` \| `"pingpong"` \| `"freecamera"` |
-| `from` / `to` | Blender marker name or frame number (used by `act`, `pingpong`, `freecamera`) |
-| `frame` | Blender marker name or frame number (used by `hold`) |
-| `height` | Scroll distance in `vh` units |
+**Scenes** and **Setup** need a live player to mean anything, so they stay disabled until the editor finds one. If the page has no `player()` call yet, the editor parks you on **Tools**: click **Init page** to write a blank `player()` scaffold into the page's HTML (right before `</body>`) and reload — the editor then reconnects to the real player and the other tabs unlock.
 
 ---
 

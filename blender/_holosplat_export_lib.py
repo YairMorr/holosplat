@@ -178,6 +178,57 @@ def run(config):
 
     mask_frame_data = {prefix: [] for prefix in mask_objects}
 
+    # ── Collect property objects ─────────────────────────────────────────────
+    # An Empty named "property: <name>" inside a collection named "properties"
+    # carries a free-form bag of named float values as Blender custom
+    # properties (Object Properties panel → Custom Properties) — e.g. a
+    # "property: color" Empty with custom properties hue=280, sat=1, val=1.
+    # Exported as data["properties"]["<name>"] = {key: float, ...}; nothing
+    # here assigns meaning to specific names/keys — that's up to whatever
+    # reads the JSON at runtime.
+    PROPERTY_PREFIX = "property:"
+
+    def custom_float_properties(obj):
+        out = {}
+        for key in obj.keys():
+            if key.startswith("_"):  # skip Blender's "_RNA_UI" metadata etc.
+                continue
+            val = obj[key]
+            if isinstance(val, (int, float)):
+                out[key] = float(val)
+        return out
+
+    property_objects = {}  # name -> object
+    props_collection = bpy.data.collections.get("properties")
+    if props_collection:
+        for obj in props_collection.all_objects:
+            if obj in reference_objects or obj.type != 'EMPTY':
+                continue
+            if not obj.name.startswith(PROPERTY_PREFIX):
+                print(f"HoloSplat: WARNING — object '{obj.name}' is in the 'properties' "
+                      f"collection but its name doesn't start with 'property:'; skipping")
+                continue
+            pname = obj.name[len(PROPERTY_PREFIX):].strip()
+            if not pname:
+                print(f"HoloSplat: WARNING — object '{obj.name}' has an empty property "
+                      f"name after 'property:'; skipping")
+                continue
+            property_objects[pname] = obj
+
+    properties_out = {}
+    for pname, obj in property_objects.items():
+        values = custom_float_properties(obj)
+        if not values:
+            print(f"HoloSplat: WARNING — property object '{pname}' has no numeric "
+                  f"custom properties; skipping")
+            continue
+        properties_out[pname] = values
+
+    if properties_out:
+        print(f"HoloSplat: found {len(properties_out)} propert"
+              f"{'y' if len(properties_out) == 1 else 'ies'}: "
+              f"{ {k: list(v.keys()) for k, v in properties_out.items()} }")
+
     # ── Collect part objects ───────────────────────────────────────────────────
     part_objects = {}   # id → object (deduped, insertion-ordered)
 
@@ -497,6 +548,7 @@ def run(config):
         "anchors"     : anchors_out,
         "focalPoint"  : focal_point,
         "focalFrames" : focal_frames,
+        "properties"  : properties_out,
     }
 
     out_dir  = bpy.path.abspath(OUTPUT_PATH)

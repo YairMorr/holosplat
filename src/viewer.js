@@ -195,6 +195,15 @@ export class Viewer {
     this._stateActive     = {}; // axis -> value currently at rest, or undefined
     this._stateTarget     = {}; // axis -> value currently targeted (resting or in-flight)
     this._statePlaybacks  = {}; // axis -> { dir, frame, toFrame, value }
+
+    // Named property bags (e.g. a "color" hue/sat/val tweak) merged in from
+    // every loaded clips file and the main scene's Animation — see
+    // blender/_holosplat_export_lib.py's "property: <name>" Empty convention.
+    // A name matching "<axis>=<value>" is applied automatically by
+    // playVariant()/_setVariantInstant() when that axis switches to that
+    // value; any other name (e.g. a bare "color") must be applied explicitly
+    // via setColorProperty() or getProperties().
+    this._properties = {};
   }
 
   /** Override a mask volume's soft-edge falloff distance (scene units). */
@@ -328,6 +337,13 @@ export class Viewer {
       };
     }
 
+    // Named property bags (e.g. a "color" hue/sat/val tweak) — see
+    // blender/_holosplat_asset_lib.py's "property: <name>" Empty convention.
+    Object.assign(this._properties, data.properties ?? {});
+    // A bare "color" property (no "<axis>=<value>" suffix) isn't tied to any
+    // playVariant() call — it's a whole-asset tint, so apply it immediately.
+    if (data.properties?.color) this._applyColorProperty(data.properties.color);
+
     if (opts.splatsDir && data.parts && Object.keys(data.parts).length) {
       const dir = opts.splatsDir.replace(/\/?$/, '/');
 
@@ -382,7 +398,7 @@ export class Viewer {
     // default-selected variant's masks/pose start fully revealed instead of
     // at their resting "out" state — applied instantly (no animation).
     for (const [axis, value] of Object.entries(opts.defaults ?? {})) {
-      if (this._transitions[axis]) this._setVariantInstant(axis, value);
+      if (this._transitions[axis] || this._properties[`${axis}=${value}`]) this._setVariantInstant(axis, value);
       if (this._states[axis])      this._setStateInstant(axis, value);
     }
     // Any state axis with no explicit default in opts.defaults still needs
@@ -477,27 +493,52 @@ export class Viewer {
    * part/mask tagged "<axis>=<value>" plays its .in→.hold segment while
    * whatever value was previously active for this axis plays .hold→.out,
    * simultaneously (see export_holosplat_asset.py's axis-transition export).
-   * No-op if `value` is already active for `axis`.
+   * If a "<axis>=<value>" property bag was exported instead (or as well —
+   * see _applyColorProperty), its hue/sat/val is applied immediately, no
+   * animation. No-op if `value` is already active for `axis`.
    */
   playVariant(axis, value) {
-    const t = this._transitions[axis];
-    if (!t) {
+    const t    = this._transitions[axis];
+    const prop = this._properties[`${axis}=${value}`];
+    if (!t && !prop) {
       console.warn(`[HoloSplat] playVariant: unknown axis "${axis}"`);
       return;
     }
     const prevValue = this._axisActive[axis];
     if (prevValue === value) return;
     this._axisActive[axis] = value;
-    this._transitionPlaybacks[axis] = { value, prevValue, elapsed: 0 };
+    if (t) this._transitionPlaybacks[axis] = { value, prevValue, elapsed: 0 };
+    if (prop) this._applyColorProperty(prop);
   }
 
   /** Apply a value instantly at its .hold frame, with no previous value to
    *  play out — used to silently resolve an asset's default variant on load. */
   _setVariantInstant(axis, value) {
     const t = this._transitions[axis];
-    if (!t) return;
     this._axisActive[axis] = value;
-    this._applyTransitionValue(t, value, t.holdFrame);
+    if (t) this._applyTransitionValue(t, value, t.holdFrame);
+    const prop = this._properties[`${axis}=${value}`];
+    if (prop) this._applyColorProperty(prop);
+  }
+
+  /** Apply a { hue?, sat?, val? } property bag as the global hue-shift uniform
+   *  (see shaders.js colorParams) — missing keys fall back to identity. */
+  _applyColorProperty({ hue = 0, sat = 1, val = 1 } = {}) {
+    this._renderer.setHueShift(hue);
+    this._renderer.setSaturation(sat);
+    this._renderer.setValue(val);
+  }
+
+  /** Manually apply a hue/sat/val property bag, e.g. `setColorProperty(viewer.getProperties().color)`. */
+  setColorProperty(prop) {
+    this._applyColorProperty(prop);
+  }
+
+  /** Every named property bag merged in so far from loadClips()/the main
+   *  Animation (see blender/_holosplat_export_lib.py's "property: <name>"
+   *  Empty convention) — { name: { key: number, ... } }. */
+  getProperties() {
+    return { ...this._properties };
   }
 
   /** Advance every in-progress axis transition by dt seconds. */
@@ -1475,6 +1516,10 @@ export class Viewer {
     if (anim.fov  != null) this._camera.fov  = anim.fov  * Math.PI / 180;
     if (anim.near != null) this._camera.near = anim.near;
     if (anim.far  != null) this._camera.far  = anim.far;
+    Object.assign(this._properties, anim.properties ?? {});
+    // A bare "color" property (no "<axis>=<value>" suffix) isn't tied to any
+    // playVariant() call — it's a whole-scene tint, so apply it immediately.
+    if (this._properties.color) this._applyColorProperty(this._properties.color);
     // Apply frame 0 camera position immediately so the scene never flashes
     // the auto-fit angle while the user waits for assets to finish loading.
     const { eye, target } = anim.getCameraFrame();

@@ -130,6 +130,7 @@
     }
     .__hs-tabbtn:hover { color:#ccc; }
     .__hs-tabbtn.active { color:#fff;border-bottom-color:#3a7aff; }
+    .__hs-tabbtn.disabled { opacity:.35;pointer-events:none;cursor:default; }
     .__hs-tabpanel { display:none; }
     .__hs-tabpanel.active { display:block; }
 
@@ -601,7 +602,7 @@
       <div class="__hs-cpane">
         <div class="__hs-cpane-body">
           <div class="__hs-fr" style="padding-top:10px;padding-bottom:6px">
-            <button class="__hs-btn" id="__hs-init" title="Inject hs-player into this page">Init page</button>
+            <button class="__hs-btn" id="__hs-init" title="Write a blank player() call into this page's source and reload">Init page</button>
             <a class="__hs-btn __hs-link" href="/examples/compress.html" target="_blank" title="Compress .splat/.ply files to .spz">Compress</a>
             <a class="__hs-btn __hs-link" href="/examples/prune.html" target="_blank" title="Prune low-impact splats / generate LOD tiers">Prune / LOD</a>
             <a class="__hs-btn __hs-link" href="/examples/pack.html" target="_blank" title="Pack color/material variants of the same model into one .spzv">Pack Variants</a>
@@ -649,6 +650,7 @@
   // ── Connect to player ────────────────────────────────────────────────────────
   function connectEntry(entry) {
     S.entry = entry;
+    setTabsEnabled(true);
     const { root, api, viewer } = entry;
 
     // Pre-populate S.sceneConfigs from the player's in-memory configs.
@@ -2288,6 +2290,15 @@
       panel.classList.toggle('active', panel.dataset.tab === tab);
   }
 
+  // Scenes/Setup need a live player to mean anything — keep them disabled
+  // (and parked on Tools) until one is connected. See "no player" fallback
+  // in init() and the "Init page" button below.
+  function setTabsEnabled(enabled) {
+    for (const tab of ['scenes', 'setup']) {
+      document.querySelector(`.__hs-tabbtn[data-tab="${tab}"]`)?.classList.toggle('disabled', !enabled);
+    }
+  }
+
   function saveUiState() {
     const state = {
       _scenes: {}, _masks: {}, sh: S.globalSh,
@@ -2762,6 +2773,7 @@
     // Tabs
     for (const btn of document.querySelectorAll('.__hs-tabbtn')) {
       btn.addEventListener('click', () => {
+        if (btn.classList.contains('disabled')) return;
         switchTab(btn.dataset.tab);
         saveUiState();
       });
@@ -2790,15 +2802,34 @@
 
     loadUiState();
 
-    // Init page
-    el('init').addEventListener('click', () => {
-      if (document.querySelector('.hs-player')) {
+    // Init page — write a blank player() scaffold into this page's HTML
+    // source (see _api_init_player in server.py) and reload so it boots for
+    // real and the editor connects to it.
+    el('init').addEventListener('click', async () => {
+      if (S.entry || document.querySelector('.hs-player')) {
         setStatus('Page already has a player', true); return;
       }
-      const tag = document.createElement('hs-player');
-      tag.id = 'hs-main';
-      document.body.appendChild(tag);
-      setStatus('Injected <hs-player id="hs-main"> — reload page to connect');
+      if (!S.apiOnline) {
+        setStatus('API offline — start the dev server to use Init page', true); return;
+      }
+      el('init').disabled = true;
+      setStatus('Creating player…');
+      try {
+        const res = await fetch('/hs-api/init-player', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ page: location.pathname }),
+        });
+        if (!res.ok) {
+          const { error } = await res.json().catch(() => ({}));
+          throw new Error(error || `HTTP ${res.status}`);
+        }
+        setStatus('Player created — reloading…');
+        location.reload();
+      } catch (e) {
+        el('init').disabled = false;
+        setStatus(`Init failed: ${e.message}`, true);
+      }
     });
 
     // Reload / sync
@@ -2926,15 +2957,24 @@
     // Start rAF loop for smooth scene card progress bars
     requestAnimationFrame(rafBars);
 
-    // Find player — it may already be registered or arrive shortly
+    // Find player — it may already be registered or arrive shortly. If none
+    // shows up within a couple seconds, this page has no player() call yet —
+    // drop into the Tools-only "no player" state so Init page can create one.
     const players = window.__hsPlayers || [];
     if (players.length) {
       connectEntry(players[0]);
     } else {
       setStatus('Waiting for player…');
+      let attempts = 0;
       const poll = setInterval(() => {
         const ps = window.__hsPlayers || [];
-        if (ps.length) { clearInterval(poll); connectEntry(ps[0]); }
+        if (ps.length) { clearInterval(poll); connectEntry(ps[0]); return; }
+        if (++attempts >= 10) {
+          clearInterval(poll);
+          switchTab('tools');
+          setTabsEnabled(false);
+          setStatus('No player on this page — click "Init page" in Tools to create one', true);
+        }
       }, 200);
     }
   }

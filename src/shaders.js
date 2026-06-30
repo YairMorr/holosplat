@@ -17,7 +17,7 @@
 //   Layout: shCoeffs[(gi * numSHBases + basis) * 3 + ch]  ch=0→r, 1→g, 2→b.
 //   Bound to a tiny dummy buffer (12 bytes) when shDegree == 0.
 //
-// Uniform layout (176 bytes = 44 floats):
+// Uniform layout (192 bytes = 48 floats):
 //   [0-15]  view matrix (col-major)
 //   [16-31] proj matrix (col-major)
 //   [32-33] viewport (width, height) in pixels
@@ -30,6 +30,10 @@
 //   [41]    numSHBases  (0/3/8/15)
 //   [42]    aaDilation  (covariance low-pass filter, default 0.3)
 //   [43]    (padding)
+//   [44]    hueShift    (turns, 0..1 — added to HSV hue; 0 = no-op)
+//   [45]    satMul      (HSV saturation multiplier; 1 = no-op)
+//   [46]    valMul      (HSV value multiplier; 1 = no-op)
+//   [47]    (padding)
 
 export const SHADER = /* wgsl */`
 
@@ -40,6 +44,7 @@ struct Uniforms {
   focal      : vec2<f32>,
   params     : vec4<f32>,   // .x = splatScale  .y = near  .z = gamma  .w = radiusCap
   shParams   : vec4<f32>,   // .x = shDegree  .y = numSHBases  .z = aaDilation
+  colorParams: vec4<f32>,   // .x = hueShift (turns)  .y = satMul  .z = valMul
 };
 
 struct Gaussian {
@@ -130,6 +135,24 @@ const SH_C3_3  =  0.3731763325901154;
 const SH_C3_4  = -0.4570457994644658;
 const SH_C3_5  =  1.445305721320277;
 const SH_C3_6  = -0.5900435899266435;
+
+// Uniform hue/sat/value tweak (see Uniforms.colorParams) — lets one splat
+// model stand in for several color variants instead of baking each as
+// separate geometry. Standard GLSL-style HSV round-trip (Sam Hocevar's
+// branchless form), ported to WGSL.
+fn rgb2hsv(c: vec3<f32>) -> vec3<f32> {
+  let K = vec4<f32>(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+  let p = mix(vec4<f32>(c.bg, K.wz), vec4<f32>(c.gb, K.xy), step(c.b, c.g));
+  let q = mix(vec4<f32>(p.xyw, c.r), vec4<f32>(c.r, p.yzx), step(p.x, c.r));
+  let d = q.x - min(q.w, q.y);
+  let e = 1.0e-10;
+  return vec3<f32>(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+fn hsv2rgb(c: vec3<f32>) -> vec3<f32> {
+  let K = vec4<f32>(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+  let p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+  return c.z * mix(K.xxx, clamp(p - K.xxx, vec3<f32>(0.0), vec3<f32>(1.0)), c.y);
+}
 
 // Read one SH basis vector (3 packed floats) from the flat shCoeffs array.
 // Each basis occupies 3 consecutive floats: [r, g, b].
@@ -359,6 +382,18 @@ fn cs_preprocess(@builtin(global_invocation_id) gid: vec3<u32>) {
   // is intentionally left unclamped by the loader, since clamping it before
   // adding the higher-order terms would bake in the wrong value.
   rgb = clamp(rgb, vec3<f32>(0.0), vec3<f32>(1.0));
+
+  // Uniform hue/sat/value tweak (see Uniforms.colorParams) — a uniform branch
+  // (same for every thread in the dispatch), so the default no-op case costs
+  // nothing beyond the comparisons.
+  let cp = uniforms.colorParams;
+  if (cp.x != 0.0 || cp.y != 1.0 || cp.z != 1.0) {
+    var hsv = rgb2hsv(rgb);
+    hsv.x = fract(hsv.x + cp.x);
+    hsv.y = clamp(hsv.y * cp.y, 0.0, 1.0);
+    hsv.z = clamp(hsv.z * cp.z, 0.0, 1.0);
+    rgb = hsv2rgb(hsv);
+  }
 
   let clip  = uniforms.proj * viewPos4;
   let ndcXY = clip.xy / clip.w;
