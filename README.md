@@ -579,7 +579,7 @@ On touch/narrow viewports a lightweight read-only stats overlay loads instead of
 
 The panel has three tabs:
 
-- **Scenes** — one card per Blender marker in the loaded animation. Configure playback mode, pingpong, blend in/out, and which scroll element each scene is linked to (`linkedId`) via an "html element" dropdown. That dropdown only lists elements with `class="hs-zone"` — add that class to any div you want selectable (`<div id="hero-section" class="hs-zone" style="height:300vh">`), otherwise every id on the page would show up as a candidate. All config lives in the `player({...})` call in the page's source — every change here saves back to that file via `/hs-api/js-*` (debounced; the status line shows API online/offline).
+- **Scenes** — one card per Blender marker in the loaded animation. Configure playback mode, pingpong, blend in/out, and which scroll element each scene is linked to (`linkedId`) via an "html element" dropdown. That dropdown only lists elements with at least one class prefixed `hs-` (e.g. `<div id="hero-section" class="hs-hero" style="height:300vh">`), named after the marker — otherwise every id on the page would show up as a candidate, and the label would be cluttered with whatever other classes the element happens to carry (Tailwind/layout utilities, etc.). All config lives in the `player({...})` call in the page's source — every change here saves back to that file via `/hs-api/js-*` (debounced; the status line shows API online/offline).
 - **Setup** — render settings (SH degree, AA dilation), the main animation/parts-directory paths, asset clips, and live 3D-scene readouts (camera, focal point, mask volumes).
 - **Tools** — utility links (Compress, Prune/LOD, Pack Variants) and **Init page**.
 

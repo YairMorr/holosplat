@@ -246,11 +246,10 @@ const api = player('#scene', {
     hero:  { linkedId: 'hero', waitForTimeline: true, pingpong: true, blendOut: 46, pan: { enabled: true } },
   },
   // linkedId is the id of the scroll container driving that scene. Give it
-  // class="hs-zone" too (<div id="hero" class="hs-zone" style="height:300vh">)
-  // — the editor's linkedId picker only lists [id].hs-zone elements, so
-  // every other id on the page (nav, buttons, forms) doesn't show up as a
-  // candidate. ids stay free-form (match your Blender marker names);
-  // hs-zone is just the opt-in marker.
+  // an hs-<marker> class too (<div id="hero" class="hs-hero" style="height:300vh">)
+  // — the editor's linkedId picker only lists elements with an hs-* class,
+  // so neither unrelated ids (nav, buttons, forms) nor unrelated classes
+  // (Tailwind/layout utilities) clutter the dropdown.
   masks: { partName: { feather: 0.3 } }, // mask-volume soft-edge overrides, by name
   sh: 3,              // global spherical-harmonics degree (0-3); omit to use per-scene/device-tier default
   aaDilation: 0.3,     // anti-aliasing covariance dilation

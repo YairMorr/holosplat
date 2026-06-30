@@ -94,7 +94,9 @@
       display:flex;align-items:center;gap:8px;flex-shrink:0;
       padding:10px 28px;background:#141414;border-bottom:1px solid #2e2e2e;
     }
+    #__hs-tb-title { display:flex;flex-direction:column;line-height:1.25; }
     #__hs-tb h1 { font-size:1.1rem;font-weight:700;white-space:nowrap; }
+    #__hs-ver { font-size:0.6875rem;color:#666;white-space:nowrap;user-select:text; }
     #__hs-st {
       flex:1;font-size:0.875rem;color:#aaa;
       white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
@@ -499,7 +501,10 @@
   <div id="__hs-panel">
 
     <div id="__hs-tb">
-      <h1>HoloSplat</h1>
+      <div id="__hs-tb-title">
+        <h1>HoloSplat</h1>
+        <span id="__hs-ver">v0.6.6</span>
+      </div>
       <span id="__hs-st">connecting…</span>
       <span id="__hs-badge" class="off">API offline</span>
       <button class="__hs-btn" id="__hs-min" title="Minimize panel">−</button>
@@ -1543,10 +1548,25 @@
   // (nav links, buttons, form fields, ...) would show up in the "html
   // element" picker. ids stay free-form/human-readable (e.g. matching
   // Blender marker names); hs-zone is the opt-in marker. See CLAUDE.md.
+  // An element is a linkable scroll zone if it has at least one class
+  // starting with "hs-" (e.g. hs-hero, hs-intro — typically the marker
+  // name). That same class is what the picker shows as the label, instead
+  // of every other utility/layout class (Tailwind, etc.) the element
+  // happens to also carry, or the (often less descriptive) id.
+  //
+  // Excludes every registered player's own root container — player.js adds
+  // class="hs-player" to it, which would otherwise match (and linking a
+  // scene to its own player's mount point makes no sense).
   function scanPageEls() {
-    return Array.from(document.querySelectorAll('[id].hs-zone'))
-      .filter(e => !e.id.startsWith('__hs-') && e.id)
-      .map(e => ({ id: e.id, tag: e.tagName.toLowerCase() }));
+    const playerRoots = (window.__hsPlayers || []).map(p => p.root);
+    return Array.from(document.querySelectorAll('[id]'))
+      .filter(e => !e.id.startsWith('__hs-') && e.id && !playerRoots.includes(e))
+      .map(e => ({
+        id: e.id,
+        tag: e.tagName.toLowerCase(),
+        hsClasses: Array.from(e.classList).filter(c => c.startsWith('hs-')),
+      }))
+      .filter(e => e.hsClasses.length > 0);
   }
 
   // ── Blend-zone visualizer ─────────────────────────────────────────────────────
@@ -2609,8 +2629,10 @@ If hs-pages.json doesn't exist yet, create it.`;
       sel.innerHTML = `<option value="">— none —</option>`;
       const pageEls = scanPageEls();
       const linkedId = cfg.linkedId || '';
-      for (const e of pageEls)
-        sel.innerHTML += `<option value="${e.id}"${e.id === linkedId ? ' selected' : ''}>#${e.id} &lt;${e.tag}&gt;</option>`;
+      for (const e of pageEls) {
+        const label = `.${e.hsClasses.join('.')}`;
+        sel.innerHTML += `<option value="${e.id}"${e.id === linkedId ? ' selected' : ''}>${label} &lt;${e.tag}&gt;</option>`;
+      }
       sel.addEventListener('change', () => {
         update(c => { c.linkedId = sel.value; });
         linkedBadge.classList.toggle('has-id', !!sel.value);

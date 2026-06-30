@@ -67,13 +67,13 @@ player('#scene', {
 });
 ```
 
-`linkedId` is the id of the DOM element (the scroll container) that drives that scene. `setupScrollPlayback` itself just does `document.getElementById(cfg.linkedId)` — any id works at runtime — but **give every linkable scroll-zone element `class="hs-zone"` too**:
+`linkedId` is the id of the DOM element (the scroll container) that drives that scene. `setupScrollPlayback` itself just does `document.getElementById(cfg.linkedId)` — any id works at runtime — but **give every linkable scroll-zone element a class prefixed `hs-`** too, named after the marker (e.g. `hs-hero`, `hs-intro`):
 
 ```html
-<div id="hero-section" class="hs-zone" style="height:300vh">...</div>
+<div id="hero-section" class="hs-hero" style="height:300vh">...</div>
 ```
 
-The editor's "html element" picker (Scenes tab → linkedId dropdown) only lists `[id].hs-zone` elements — without that class, every id on the page (nav links, buttons, form fields) would show up as a candidate. Keep ids free-form/human-readable (matching Blender marker names, e.g. `hero-section`); `hs-zone` is purely the opt-in marker, it has no required naming pattern itself. See `src/player.js`'s `setupScrollPlayback` for the full set of recognised per-scene keys (`playback`, `pingpong`, `playOnce`, `blendIn`, `blendOut`).
+The editor's "html element" picker (Scenes tab → linkedId dropdown) only lists elements with at least one `hs-`-prefixed class — without one, every id on the page (nav links, buttons, form fields) would show up as a candidate, and every other class the element carries (Tailwind/layout utilities, etc.) would clutter the label. The picker shows the `hs-*` class itself as the label, not the id, so it stays meaningful even when ids are auto-generated or otherwise not descriptive. See `src/player.js`'s `setupScrollPlayback` for the full set of recognised per-scene keys (`playback`, `pingpong`, `playOnce`, `blendIn`, `blendOut`).
 
 ## Scene format preference
 
