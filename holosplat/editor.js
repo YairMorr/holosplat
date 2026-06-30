@@ -1726,8 +1726,12 @@
         // to the legacy literal-path convention — see server.py / src/server.js.
         const res = await fetch(`/hs-api/page-source?page=${encodeURIComponent(window.location.pathname)}`);
         if (res.ok) {
-          const html = await res.text();
-          const doc  = new DOMParser().parseFromString(html, 'text/html');
+          // Scan the raw source text directly for the player({...}) call's
+          // sentinel-commented properties — not via DOMParser/<script>
+          // lookup, since a framework component file (.tsx/.jsx/.vue/...)
+          // has no <script> tag at all, only plain HTML does. The sentinel
+          // regexes below don't care either way; they just match text.
+          const src = await res.text();
 
           function mergeScenes(parsed) {
             for (const [name, raw] of Object.entries(parsed)) {
@@ -1735,59 +1739,55 @@
             }
           }
 
-          // Read all config from JS source sentinels
-          for (const scriptEl of doc.querySelectorAll('script')) {
-            const src = scriptEl.textContent;
-            const mScenes = src.match(/^[ \t]*scenes\s*:\s*(\{.+\}),?\s*\/\/\s*hs-scenes\s*$/m);
-            if (mScenes) { try { mergeScenes(JSON.parse(mScenes[1])); } catch { } }
-            const mMasks = src.match(/^[ \t]*masks\s*:\s*(\{.+\}),?\s*\/\/\s*hs-masks\s*$/m);
-            if (mMasks) { try {
-              for (const [name, raw] of Object.entries(JSON.parse(mMasks[1]))) S.maskConfigs[name] = { ...raw };
-            } catch { } }
-            const mClips = src.match(/^[ \t]*clips\s*:\s*(\[.*\]),?\s*\/\/\s*hs-clips\s*$/m);
-            if (mClips && !S.assets.length) { try {
-              // Each entry is either a bare url string, or {url, splatsDir,
-              // defaults} once a splats path and/or per-axis default
-              // variant has been set — see saveAssetsAttr.
-              S.assets = JSON.parse(mClips[1]).map(entry => {
-                const obj = typeof entry === 'string' ? { url: entry } : entry;
-                return {
-                  url: obj.url ?? '', splatsDir: obj.splatsDir ?? '', defaults: obj.defaults ?? {},
-                  status: 'idle', clipIds: [], axes: {}, states: {}, parts: {}, masks: [],
-                };
-              });
-            } catch { } }
-            const mSh = src.match(/^[ \t]*sh\s*:\s*(\d+)[^\n]*\/\/\s*hs-sh\s*$/m);
-            if (mSh) S.globalSh = +mSh[1];
-            const mZi = src.match(/^[ \t]*zIndex\s*:\s*(-?\d+)[^\n]*\/\/\s*hs-zi\s*$/m);
-            if (mZi) { S.globalZIndex = +mZi[1]; if (S.entry?.root) S.entry.root.style.zIndex = mZi[1]; }
-            const mAa = src.match(/^[ \t]*aaDilation\s*:\s*([0-9.]+)[^\n]*\/\/\s*hs-aa\s*$/m);
-            if (mAa) { S.globalAaDilation = +mAa[1]; S.entry?.api?.setAaDilation?.(S.globalAaDilation); }
-            const mAnim = src.match(/^\s*animation\s*:\s*(['"])(.*?)\1/m);
-            if (mAnim && !el('an').value) el('an').value = mAnim[2];
-            const mPartsDir = src.match(/^\s*partsDir\s*:\s*(['"])(.*?)\1/m);
-            if (mPartsDir && !el('pd').value) { el('pd').value = mPartsDir[2]; S.lastSavedDir = mPartsDir[2]; }
-            // Derive partsDir from saved compact parts line (// hs-parts sentinel)
-            if (!el('pd').value) {
-              const mHsParts = src.match(/^[ \t]*parts\s*:\s*(\{.+\}),?\s*\/\/\s*hs-parts\s*$/m);
-              if (mHsParts) {
-                try {
-                  const map = JSON.parse(mHsParts[1]);
-                  const firstVal = Object.values(map)[0] || '';
-                  const lastSlash = firstVal.lastIndexOf('/');
-                  if (lastSlash >= 0) el('pd').value = firstVal.slice(0, lastSlash + 1);
-                } catch { }
-              }
+          const mScenes = src.match(/^[ \t]*scenes\s*:\s*(\{.+\}),?\s*\/\/\s*hs-scenes\s*$/m);
+          if (mScenes) { try { mergeScenes(JSON.parse(mScenes[1])); } catch { } }
+          const mMasks = src.match(/^[ \t]*masks\s*:\s*(\{.+\}),?\s*\/\/\s*hs-masks\s*$/m);
+          if (mMasks) { try {
+            for (const [name, raw] of Object.entries(JSON.parse(mMasks[1]))) S.maskConfigs[name] = { ...raw };
+          } catch { } }
+          const mClips = src.match(/^[ \t]*clips\s*:\s*(\[.*\]),?\s*\/\/\s*hs-clips\s*$/m);
+          if (mClips && !S.assets.length) { try {
+            // Each entry is either a bare url string, or {url, splatsDir,
+            // defaults} once a splats path and/or per-axis default
+            // variant has been set — see saveAssetsAttr.
+            S.assets = JSON.parse(mClips[1]).map(entry => {
+              const obj = typeof entry === 'string' ? { url: entry } : entry;
+              return {
+                url: obj.url ?? '', splatsDir: obj.splatsDir ?? '', defaults: obj.defaults ?? {},
+                status: 'idle', clipIds: [], axes: {}, states: {}, parts: {}, masks: [],
+              };
+            });
+          } catch { } }
+          const mSh = src.match(/^[ \t]*sh\s*:\s*(\d+)[^\n]*\/\/\s*hs-sh\s*$/m);
+          if (mSh) S.globalSh = +mSh[1];
+          const mZi = src.match(/^[ \t]*zIndex\s*:\s*(-?\d+)[^\n]*\/\/\s*hs-zi\s*$/m);
+          if (mZi) { S.globalZIndex = +mZi[1]; if (S.entry?.root) S.entry.root.style.zIndex = mZi[1]; }
+          const mAa = src.match(/^[ \t]*aaDilation\s*:\s*([0-9.]+)[^\n]*\/\/\s*hs-aa\s*$/m);
+          if (mAa) { S.globalAaDilation = +mAa[1]; S.entry?.api?.setAaDilation?.(S.globalAaDilation); }
+          const mAnim = src.match(/^\s*animation\s*:\s*(['"])(.*?)\1/m);
+          if (mAnim && !el('an').value) el('an').value = mAnim[2];
+          const mPartsDir = src.match(/^\s*partsDir\s*:\s*(['"])(.*?)\1/m);
+          if (mPartsDir && !el('pd').value) { el('pd').value = mPartsDir[2]; S.lastSavedDir = mPartsDir[2]; }
+          // Derive partsDir from saved compact parts line (// hs-parts sentinel)
+          if (!el('pd').value) {
+            const mHsParts = src.match(/^[ \t]*parts\s*:\s*(\{.+\}),?\s*\/\/\s*hs-parts\s*$/m);
+            if (mHsParts) {
+              try {
+                const map = JSON.parse(mHsParts[1]);
+                const firstVal = Object.values(map)[0] || '';
+                const lastSlash = firstVal.lastIndexOf('/');
+                if (lastSlash >= 0) el('pd').value = firstVal.slice(0, lastSlash + 1);
+              } catch { }
             }
-            // Derive partsDir from existing multi-line parts block (first path value)
-            if (!el('pd').value) {
-              const mBlock = src.match(/parts\s*:\s*\{([\s\S]+?)\}/);
-              if (mBlock) {
-                const firstPath = mBlock[1].match(/['"]([^'"]+\.(?:spz|ply|splat))['"]/)?.[1];
-                if (firstPath) {
-                  const lastSlash = firstPath.lastIndexOf('/');
-                  if (lastSlash >= 0) el('pd').value = firstPath.slice(0, lastSlash + 1);
-                }
+          }
+          // Derive partsDir from existing multi-line parts block (first path value)
+          if (!el('pd').value) {
+            const mBlock = src.match(/parts\s*:\s*\{([\s\S]+?)\}/);
+            if (mBlock) {
+              const firstPath = mBlock[1].match(/['"]([^'"]+\.(?:spz|ply|splat))['"]/)?.[1];
+              if (firstPath) {
+                const lastSlash = firstPath.lastIndexOf('/');
+                if (lastSlash >= 0) el('pd').value = firstPath.slice(0, lastSlash + 1);
               }
             }
           }
