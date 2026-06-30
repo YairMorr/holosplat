@@ -89,8 +89,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         parsed = urllib.parse.urlparse(self.path)
         if parsed.path.startswith('/hs-api/'):
             params = dict(urllib.parse.parse_qsl(parsed.query))
-            if   parsed.path == '/hs-api/file': self._api_read(params.get('path', ''))
-            elif parsed.path == '/hs-api/ls':   self._api_ls()
+            if   parsed.path == '/hs-api/file':        self._api_read(params.get('path', ''))
+            elif parsed.path == '/hs-api/ls':          self._api_ls()
+            elif parsed.path == '/hs-api/page-source': self._api_page_source(params.get('page', ''))
             else: self._json(404, {'error': 'not found'})
         else:
             super().do_GET()
@@ -134,6 +135,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return None          # can't read/write the project root itself
         return full
 
+    def _load_pages_map(self):
+        """hs-pages.json (project root) maps a URL path to the source file
+        that holds its player() call — e.g. {"/colors": "src/components/
+        ColorsPlayer.tsx"}. Needed for framework projects (Next.js, etc.)
+        where a URL has no file of the same name; an AI coding assistant
+        (or a human) creates the file and adds the mapping (see the
+        "ask your AI assistant" prompt the editor shows when Init page
+        can't find a literal file — holosplat/editor.js's askClaudePrompt).
+        Optional: if absent, every route below falls back to the legacy
+        literal-path convention untouched.
+        """
+        path = os.path.join(ROOT, 'hs-pages.json')
+        if not os.path.isfile(path):
+            return {}
+        try:
+            with open(path, encoding='utf-8') as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _resolve_page(self, raw_page):
+        """Resolve a `page` value (the requesting page's URL, e.g. the
+        browser's location.pathname) sent by the ?hs editor to a safe file
+        path. Checks hs-pages.json first, then falls back to treating the
+        URL path itself as a project-relative file path ('/' -> index.html,
+        matching plain static-HTML sites where the URL already is the
+        filename).
+        """
+        clean = (raw_page or '').split('?')[0]
+        mapped = self._load_pages_map().get(clean)
+        if mapped:
+            return self._safe(mapped)
+        rel = clean.lstrip('/') or 'index.html'
+        return self._safe(rel)
+
     def _json(self, code, data):
         body = json.dumps(data).encode()
         self.send_response(code)
@@ -142,25 +179,36 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _api_read(self, rel):
-        path = self._safe(rel)
+    def _serve_file(self, path, ext):
         if not path or not os.path.isfile(path):
             self._json(404, {'error': 'not found'})
             return
         with open(path, 'rb') as f:
             body = f.read()
-        ext = os.path.splitext(rel)[1].lower()
         ct = {
             '.json': 'application/json',
             '.html': 'text/html; charset=utf-8',
             '.js':   'text/javascript; charset=utf-8',
             '.css':  'text/css; charset=utf-8',
-        }.get(ext, 'text/plain; charset=utf-8')
+        }.get(ext.lower(), 'text/plain; charset=utf-8')
         self.send_response(200)
         self.send_header('Content-Type', ct)
         self.send_header('Content-Length', str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _api_read(self, rel):
+        self._serve_file(self._safe(rel), os.path.splitext(rel)[1])
+
+    def _api_page_source(self, raw_page):
+        """GET /hs-api/page-source?page=<url> — like /hs-api/file but
+        resolves `page` (a URL, e.g. location.pathname) via hs-pages.json /
+        the legacy literal-path convention instead of taking a literal repo
+        path. Used by the editor to read the current page's source for
+        displaying already-saved config (see editor.js's loadPageState).
+        """
+        path = self._resolve_page(raw_page)
+        self._serve_file(path, os.path.splitext(path)[1] if path else '')
 
     def _api_write(self, rel):
         path = self._safe(rel)
@@ -191,7 +239,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         attrs = body.get('attrs', {})
         if not page or not el_id or not attrs:
             self._json(400, {'error': 'missing fields'}); return
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:
@@ -221,7 +269,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page = body.get('page', '')
         sh   = int(body.get('sh', 0))
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:
@@ -250,7 +298,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page = body.get('page', '')
         url  = body.get('url', '')
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:
@@ -281,7 +329,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page  = body.get('page', '')
         parts = body.get('parts', {})
-        full  = self._safe(page.lstrip('/').split('?')[0])
+        full  = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:
@@ -314,7 +362,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page     = body.get('page', '')
         partsDir = body.get('partsDir', '')
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:
@@ -346,7 +394,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page    = body.get('page', '')
         zi      = int(body.get('zIndex', 5))
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:
@@ -377,7 +425,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page = body.get('page', '')
         aa   = round(float(body.get('aaDilation', 0.15)), 4)
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:
@@ -406,7 +454,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page   = body.get('page', '')
         scenes = body.get('scenes', {})
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         scenes_str = json.dumps(scenes, separators=(',', ':'))
@@ -438,7 +486,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page  = body.get('page', '')
         masks = body.get('masks', {})
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         masks_str = json.dumps(masks, separators=(',', ':'))
@@ -470,7 +518,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json(400, {'error': 'invalid JSON'}); return
         page  = body.get('page', '')
         clips = body.get('clips', [])
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         clips_str = json.dumps(clips, separators=(',', ':'))
@@ -507,7 +555,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         except Exception:
             self._json(400, {'error': 'invalid JSON'}); return
         page = body.get('page', '')
-        full = self._safe(page.lstrip('/').split('?')[0])
+        full = self._resolve_page(page)
         if not full or not os.path.isfile(full):
             self._json(404, {'error': 'not found'}); return
         with _file_lock:

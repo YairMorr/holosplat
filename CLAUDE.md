@@ -81,4 +81,13 @@ The editor (`holosplat/editor.js`) is not a standalone page — it's an overlay 
 - Three tabs: **Scenes** (per-marker scene cards), **Setup** (render/file/3D-scene settings), **Tools** (utility links + **Init page**)
 - If no player is found on the page, the editor disables Scenes/Setup and parks on Tools — **Init page** writes a blank `player()` scaffold into the page's HTML and reloads to connect
 
+### Resolving a page's URL to its source file
+
+Every `/hs-api/*` route that reads or writes a page's `player({...})` call takes a `page` field — the browser's `location.pathname` (e.g. `/`, `/colors`). That's resolved to a real file by `_resolve_page()` (server.py) / `pagePath()` (src/server.js):
+
+1. Check **`hs-pages.json`** at the project root — `{ "<urlPath>": "<file path>" }` — first.
+2. Fall back to treating the URL path itself as a project-relative file path (`/` → `index.html`).
+
+Plain static-HTML projects (server.py-served sites) never need `hs-pages.json` — the URL already is the filename. Framework projects (Next.js, etc.) do, since a URL has no file of the same name. When **Init page** can't find a literal file for the current URL (404), the editor shows a copy-paste prompt (`askClaudePrompt()` in editor.js) for an AI coding assistant to create the player component and register it in `hs-pages.json` — the editor doesn't attempt to generate or insert framework-specific component code itself.
+
 Never include `holosplat/` in production builds or deploy it.

@@ -607,6 +607,16 @@
             <a class="__hs-btn __hs-link" href="/examples/prune.html" target="_blank" title="Prune low-impact splats / generate LOD tiers">Prune / LOD</a>
             <a class="__hs-btn __hs-link" href="/examples/pack.html" target="_blank" title="Pack color/material variants of the same model into one .spzv">Pack Variants</a>
           </div>
+          <div id="__hs-ask-claude" style="display:none;padding:0 10px 12px">
+            <p style="margin:0 0 8px;font-size:0.8125rem;color:#aaa;line-height:1.5">
+              No player found, and this page isn't a plain HTML file I can scaffold automatically
+              (it's likely built from framework components). Paste this into Claude Code or
+              another AI coding assistant working in this project:
+            </p>
+            <textarea id="__hs-ask-claude-text" readonly rows="6"
+              style="width:100%;resize:vertical;background:#0d0d0d;color:#ddd;border:1px solid #333;border-radius:4px;padding:8px;font:11px/1.5 ui-monospace,Menlo,Consolas,monospace"></textarea>
+            <button class="__hs-btn" id="__hs-ask-claude-copy" style="margin-top:6px">Copy prompt</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1711,8 +1721,10 @@
     // ── HTML source read (requires API) ────────────────────────────────────────
     if (S.apiOnline) {
       try {
-        const rel = window.location.pathname.replace(/^\//, '').split('?')[0] || 'index.html';
-        const res = await fetch(`/hs-api/file?path=${encodeURIComponent(rel)}`);
+        // page-source resolves via hs-pages.json (for framework projects
+        // where this URL has no file of the same name) before falling back
+        // to the legacy literal-path convention — see server.py / src/server.js.
+        const res = await fetch(`/hs-api/page-source?page=${encodeURIComponent(window.location.pathname)}`);
         if (res.ok) {
           const html = await res.text();
           const doc  = new DOMParser().parseFromString(html, 'text/html');
@@ -2299,6 +2311,48 @@
     }
   }
 
+  // Component-name guess for the askClaudePrompt suggestion — '/' -> Home,
+  // '/colors' -> Colors, '/a/b' -> AB. Purely a hint; the assistant picks
+  // the real name.
+  function suggestedPlayerName(pathname) {
+    const words = pathname.split(/[/_-]+/).filter(Boolean);
+    const pascal = (words.length ? words : ['home'])
+      .map(s => s.charAt(0).toUpperCase() + s.slice(1))
+      .join('');
+    return `${pascal}Player`;
+  }
+
+  // Prompt shown (see "Init page" below) when this page has no literal file
+  // to scaffold a player() into — a framework/component-based project
+  // (Next.js, etc.) where the URL doesn't map 1:1 to a source file. Hands
+  // the job to an AI coding assistant that already understands this
+  // codebase's conventions, instead of the editor guessing at how to
+  // safely insert JSX into an arbitrary component tree.
+  function askClaudePrompt() {
+    const pathname = location.pathname;
+    return `Add a HoloSplat viewer to the page at ${pathname}.
+
+Create a new client component with a blank player() call (follow the
+pattern in an existing player component if one exists in this project —
+search for "from 'holosplat'") and mount it on that page. Then register
+it in hs-pages.json at the project root so the ?hs editor can find and
+save to it:
+
+  { "${pathname}": "<path-to-the-new-component-file>" }
+
+A reasonable component name would be ${suggestedPlayerName(pathname)}.
+If hs-pages.json doesn't exist yet, create it.`;
+  }
+
+  function showAskClaude() {
+    el('ask-claude-text').value = askClaudePrompt();
+    el('ask-claude').style.display = '';
+  }
+
+  function hideAskClaude() {
+    el('ask-claude').style.display = 'none';
+  }
+
   function saveUiState() {
     const state = {
       _scenes: {}, _masks: {}, sh: S.globalSh,
@@ -2804,7 +2858,10 @@
 
     // Init page — write a blank player() scaffold into this page's HTML
     // source (see _api_init_player in server.py) and reload so it boots for
-    // real and the editor connects to it.
+    // real and the editor connects to it. If there's no literal file for
+    // this URL (a framework project — see hs-pages.json in server.py /
+    // src/server.js), that scaffold can't work; fall back to a copy-paste
+    // prompt for an AI coding assistant to do it instead (askClaudePrompt).
     el('init').addEventListener('click', async () => {
       if (S.entry || document.querySelector('.hs-player')) {
         setStatus('Page already has a player', true); return;
@@ -2822,14 +2879,29 @@
         });
         if (!res.ok) {
           const { error } = await res.json().catch(() => ({}));
-          throw new Error(error || `HTTP ${res.status}`);
+          const e = new Error(error || `HTTP ${res.status}`);
+          e.status = res.status;
+          throw e;
         }
+        hideAskClaude();
         setStatus('Player created — reloading…');
         location.reload();
       } catch (e) {
         el('init').disabled = false;
-        setStatus(`Init failed: ${e.message}`, true);
+        if (e.status === 404) {
+          showAskClaude();
+          setStatus('No file found for this page — see prompt below', true);
+        } else {
+          setStatus(`Init failed: ${e.message}`, true);
+        }
       }
+    });
+
+    el('ask-claude-copy').addEventListener('click', () => {
+      el('ask-claude-text').select();
+      (navigator.clipboard?.writeText(el('ask-claude-text').value) ?? Promise.reject())
+        .then(() => setStatus('Prompt copied'))
+        .catch(() => {});
     });
 
     // Reload / sync

@@ -585,6 +585,18 @@ The panel has three tabs:
 
 **Scenes** and **Setup** need a live player to mean anything, so they stay disabled until the editor finds one. If the page has no `player()` call yet, the editor parks you on **Tools**: click **Init page** to write a blank `player()` scaffold into the page's HTML (right before `</body>`) and reload — the editor then reconnects to the real player and the other tabs unlock.
 
+### Framework / component-based projects (Next.js, etc.)
+
+**Init page** only works on plain HTML files — a URL like `/colors` has no `colors` file to patch when pages are React/Vue/Svelte components. For these projects:
+
+1. Create an `hs-pages.json` file at the project root mapping each URL to the source file holding that page's `player()` call:
+   ```json
+   { "/": "src/components/HoloSplatPlayer.tsx", "/colors": "src/components/ColorsPlayer.tsx" }
+   ```
+   Every `/hs-api/*` route checks this file first, before falling back to treating the URL as a literal file path.
+2. If **Init page** can't find a file for the current URL, it shows a copy-paste prompt instead of an error — paste it into Claude Code (or another AI coding assistant) working in the project, and it creates the component, mounts it on the page, and adds the `hs-pages.json` entry for you. The editor deliberately doesn't try to generate or insert framework-specific component code itself — an assistant with real codebase context does that part more reliably than a generic scaffolder could.
+3. Reload the page with `?hs` — the editor finds the new player and the Scenes/Setup tabs unlock.
+
 ---
 
 ## Node.js server middleware

@@ -33,6 +33,7 @@
  *   GET  /hs-api/ls              List .spz/.ply/.splat and .json files
  *   GET  /hs-api/file?path=<rel> Read a file (relative to project root)
  *   PUT  /hs-api/file?path=<rel> Write a file
+ *   GET  /hs-api/page-source?page=<url> Read the source file mapped to a page URL
  *   POST /hs-api/html-attr       Patch attributes on a tag in an HTML source file
  *   POST /hs-api/init-player     Scaffold a blank player() call into a page with none
  *   POST /hs-api/js-sh           Patch the `sh:` property in a player({...}) call
@@ -86,11 +87,47 @@ export function createHsApiHandler(root = process.cwd()) {
     res.end(body);
   }
 
-  // Resolve an hs-api request's `page` field (leading slash + query string
-  // stripped) to a safe path, or null. Shared by every js-* / html-attr /
-  // init-player route below.
+  function serveFile(res, full) {
+    if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
+    const body = fs.readFileSync(full);
+    const ext  = path.extname(full).toLowerCase();
+    const mime = ext === '.html' || ext === '.htm' ? 'text/html'
+               : ext === '.json'                   ? 'application/json'
+               : 'application/octet-stream';
+    res.writeHead(200, { 'Content-Type': mime, 'Content-Length': body.length });
+    res.end(body);
+  }
+
+  // hs-pages.json (project root) maps a URL path to the source file that
+  // holds its player() call — e.g. {"/colors": "src/components/
+  // ColorsPlayer.tsx"}. Needed for framework projects (Next.js, etc.)
+  // where a URL has no file of the same name; an AI coding assistant (or a
+  // human) creates the file and adds the mapping — see the "ask your AI
+  // assistant" prompt the editor shows when Init page can't find a literal
+  // file (holosplat/editor.js's askClaudePrompt). Optional: if absent,
+  // every route below falls back to the legacy literal-path convention.
+  function loadPagesMap() {
+    const file = path.join(root, 'hs-pages.json');
+    if (!fs.existsSync(file)) return {};
+    try {
+      const data = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return data && typeof data === 'object' ? data : {};
+    } catch {
+      return {};
+    }
+  }
+
+  // Resolve an hs-api request's `page` field (the requesting page's URL,
+  // e.g. the browser's location.pathname) to a safe file path, or null.
+  // Checks hs-pages.json first, then falls back to treating the URL path
+  // itself as a project-relative file path ('/' -> index.html, matching
+  // plain static-HTML sites where the URL already is the filename). Shared
+  // by every js-* / html-attr / init-player / page-source route below.
   function pagePath(page) {
-    return safePath((page || '').replace(/^\//, '').split('?')[0]);
+    const clean  = (page || '').split('?')[0];
+    const mapped = loadPagesMap()[clean];
+    if (mapped) return safePath(mapped);
+    return safePath(clean.replace(/^\//, '') || 'index.html');
   }
 
   // Detect the indentation used by the `animation:` line in a player({...})
@@ -209,15 +246,16 @@ export function createHsApiHandler(root = process.cwd()) {
 
     // GET /file?path=...
     if (route === '/file' && req.method === 'GET') {
-      const full = safePath(params.path);
-      if (!full || !fs.existsSync(full)) return sendJson(res, 404, { error: 'not found' });
-      const body = fs.readFileSync(full);
-      const ext  = path.extname(full).toLowerCase();
-      const mime = ext === '.html' || ext === '.htm' ? 'text/html'
-                 : ext === '.json'                   ? 'application/json'
-                 : 'application/octet-stream';
-      res.writeHead(200, { 'Content-Type': mime, 'Content-Length': body.length });
-      return res.end(body);
+      return serveFile(res, safePath(params.path));
+    }
+
+    // GET /page-source?page=<url> — like /file but resolves `page` (a URL,
+    // e.g. location.pathname) via hs-pages.json / the legacy literal-path
+    // convention instead of taking a literal repo path. Used by the editor
+    // to read the current page's source for displaying already-saved
+    // config (see editor.js's loadPageState).
+    if (route === '/page-source' && req.method === 'GET') {
+      return serveFile(res, pagePath(params.page));
     }
 
     // PUT /file?path=...
